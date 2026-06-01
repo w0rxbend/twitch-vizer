@@ -1742,6 +1742,7 @@ class ChatCard {
     avatarUrl?: string | null,
   ): PIXI.Container {
     const view = new PIXI.Container();
+    const mask = new PIXI.Graphics().circle(16, 16, 14).fill(0xffffff);
     const fallback = new PIXI.ParticleContainer<PIXI.Particle>({
       texture,
       roundPixels: true,
@@ -1756,6 +1757,9 @@ class ChatCard {
     const rng = seedRng(seed ^ 0xfeedbabe);
     const colors = [palette.ink, userColor, palette.glow, palette.pop, palette.base];
     const particles: PIXI.Particle[] = [];
+    fallback.x = 2;
+    fallback.y = 2;
+    fallback.mask = mask;
     for (let y = 0; y < 7; y++) {
       for (let x = 0; x < 7; x++) {
         const mirrorX = x > 3 ? 6 - x : x;
@@ -1774,18 +1778,30 @@ class ChatCard {
     }
     fallback.addParticle(...particles);
     fallback.update();
+    view.addChild(mask);
     view.addChild(fallback);
+    view.addChild(this._makeAvatarFrame(palette, userColor));
 
     if (avatarUrl) {
-      this._loadAvatarImage(avatarUrl, view, fallback);
+      this._loadAvatarImage(avatarUrl, view, fallback, mask);
     }
     return view;
+  }
+
+  private _makeAvatarFrame(palette: Palette, userColor: number): PIXI.Graphics {
+    const frame = new PIXI.Graphics();
+    frame.circle(16, 16, 16).stroke({ color: 0x07050b, width: 4, alpha: 0.74 });
+    frame.circle(16, 16, 13).stroke({ color: mixColor(palette.glow, userColor, 0.42), width: 3, alpha: 0.92 });
+    frame.rect(7, 5, 6, 3).fill(rgba(0xffffff, 0.55));
+    frame.rect(11, 4, 3, 3).fill(rgba(0xffffff, 0.38));
+    return frame;
   }
 
   private _loadAvatarImage(
     url: string,
     view: PIXI.Container,
     fallback: PIXI.Container,
+    mask: PIXI.Graphics,
   ): void {
     const image = new Image();
     image.crossOrigin = 'anonymous';
@@ -1800,10 +1816,11 @@ class ChatCard {
       const size = 28;
       const scale = size / Math.max(image.naturalWidth, image.naturalHeight, 1);
       sprite.scale.set(scale);
-      sprite.x = Math.round((size - sprite.width) / 2);
-      sprite.y = Math.round((size - sprite.height) / 2);
+      sprite.x = 2 + Math.round((size - sprite.width) / 2);
+      sprite.y = 2 + Math.round((size - sprite.height) / 2);
+      sprite.mask = mask;
 
-      view.addChild(sprite);
+      view.addChildAt(sprite, Math.min(2, view.children.length));
     };
     image.onerror = () => {
       console.warn('[ChatOverlay] avatar image failed to load:', url);

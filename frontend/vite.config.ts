@@ -5,7 +5,7 @@ export default defineConfig(({ command }) => ({
   root: resolve(__dirname, 'src/scenes'),
   base: command === 'serve' ? '/' : './',
   server: {
-    open: '/chat/',
+    open: '/hacker-chat/',
     proxy: {
       '/ws': {
         target: 'ws://localhost:8080',
@@ -19,6 +19,8 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       input: {
         chat: resolve(__dirname, 'src/scenes/chat/index.html'),
+        fluidChat: resolve(__dirname, 'src/scenes/fluid-chat/index.html'),
+        hackerChat: resolve(__dirname, 'src/scenes/hacker-chat/index.html'),
       },
     },
   },
