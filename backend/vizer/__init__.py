@@ -16,7 +16,14 @@ import logging
 from twitchio import eventsub
 
 from .bot import VizBot, get_user_id
-from .config import ACCESS_TOKEN, BOT_USERNAME, REFRESH_TOKEN, SERVER_HOST, SERVER_PORT
+from .config import (
+    ACCESS_TOKEN,
+    BOT_USERNAME,
+    EMOTES_DB_PATH,
+    REFRESH_TOKEN,
+    SERVER_HOST,
+    SERVER_PORT,
+)
 from .handler import MessageHandler, QueuedMessage
 from .log import setup_logging
 from .server import VizServer
@@ -39,6 +46,7 @@ async def run() -> None:
     handler = MessageHandler(
         broadcast=server.broadcast,
         message_queue=message_queue,
+        emotes_db_path=EMOTES_DB_PATH,
     )
 
     bot_id = await get_user_id(BOT_USERNAME)

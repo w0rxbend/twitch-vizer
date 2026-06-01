@@ -1,10 +1,12 @@
 """HTTP and WebSocket server for OBS browser source overlays.
 
 Built on Starlette + uvicorn.  Serves:
-  - A JSON index at / listing available scenes.
-  - Per-scene HTML pages from vizer/static/scenes/<name>/index.html.
-  - Static assets from vizer/static/.
+  - A JSON service index at /.
   - A WebSocket endpoint at /ws that pushes VisualEvents to all connected clients.
+
+If static frontend assets are present in vizer/static/, they are exposed as a
+convenience for local combined hosting. The bot/server runtime does not require
+frontend files; overlays can be hosted separately and pointed at /ws.
 """
 
 import dataclasses
@@ -46,7 +48,9 @@ class VizServer:
             scenes: list[str] = []
             if _SCENES_DIR.exists():
                 scenes = sorted(p.name for p in _SCENES_DIR.iterdir() if p.is_dir())
-            return JSONResponse({"scenes": scenes})
+            return JSONResponse(
+                {"service": "twitch-vizer", "websocket": "/ws", "scenes": scenes}
+            )
 
         async def scene_redirect(request: Request) -> RedirectResponse:
             name = request.path_params["name"]
@@ -91,8 +95,9 @@ class VizServer:
             Route("/scenes/{name}", scene_redirect),
             Route("/scenes/{name}/", scene_page),
             WebSocketRoute("/ws", ws_endpoint),
-            Mount("/static", StaticFiles(directory=_STATIC_DIR)),
         ]
+        if _STATIC_DIR.exists():
+            routes.append(Mount("/static", StaticFiles(directory=_STATIC_DIR)))
 
         return Starlette(routes=routes)
 

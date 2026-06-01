@@ -1,16 +1,3 @@
-# Stage 1 — build the frontend (TypeScript → bundled scenes)
-FROM node:22-alpine AS frontend-builder
-
-WORKDIR /build
-
-COPY package.json ./
-COPY frontend/package.json ./frontend/
-RUN npm install --workspace=frontend
-
-COPY frontend/ ./frontend/
-RUN npm run build --workspace=frontend
-
-# Stage 2 — Python runtime
 FROM python:3.12-slim-bookworm
 
 RUN adduser --disabled-password --gecos "" vizer
@@ -26,10 +13,8 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 COPY backend/vizer/ vizer/
+COPY backend/emotes/ emotes/
 COPY backend/main.py ./
-
-# Copy Vite-built scene assets (outDir was ../backend/vizer/static/scenes relative to frontend/)
-COPY --from=frontend-builder /build/backend/vizer/static/scenes/ vizer/static/scenes/
 
 RUN mkdir -p /data && chown -R vizer:vizer /app /data
 

@@ -3,9 +3,9 @@ import { resolve } from 'path';
 
 export default defineConfig(({ command }) => ({
   root: resolve(__dirname, 'src/scenes'),
-  base: command === 'serve' ? '/' : '/static/scenes/',
+  base: command === 'serve' ? '/' : './',
   server: {
-    open: '/biome/',
+    open: '/chat/',
     proxy: {
       '/ws': {
         target: 'ws://localhost:8080',
@@ -14,11 +14,11 @@ export default defineConfig(({ command }) => ({
     },
   },
   build: {
-    outDir: resolve(__dirname, '../backend/vizer/static/scenes'),
-    emptyOutDir: false,
+    outDir: resolve(__dirname, 'dist'),
+    emptyOutDir: true,
     rollupOptions: {
       input: {
-        biome: resolve(__dirname, 'src/scenes/biome/index.html'),
+        chat: resolve(__dirname, 'src/scenes/chat/index.html'),
       },
     },
   },

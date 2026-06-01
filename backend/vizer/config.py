@@ -10,6 +10,7 @@ Optional variables fall back to sensible defaults.
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -36,6 +37,10 @@ BOT_USERNAME: str  = str(os.getenv("TWITCH_BOT_USERNAME", "worxbend"))
 # ── HTTP / WebSocket server ───────────────────────────────────────────────────
 SERVER_HOST: str = str(os.getenv("VIZER_SERVER_HOST", "0.0.0.0"))
 SERVER_PORT: int = int(os.getenv("VIZER_SERVER_PORT", "8080"))
+
+# ── Optional emote cache ──────────────────────────────────────────────────────
+_DEFAULT_EMOTES_DB_PATH = Path(__file__).resolve().parents[1] / "emotes" / "emotes.db"
+EMOTES_DB_PATH: str = str(os.getenv("VIZER_EMOTES_DB_PATH", _DEFAULT_EMOTES_DB_PATH))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = str(os.getenv("VIZER_LOG_LEVEL", "INFO")).upper()

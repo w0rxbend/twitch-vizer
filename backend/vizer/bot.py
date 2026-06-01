@@ -25,9 +25,72 @@ from twitchio.authentication import UserTokenPayload, ValidateTokenPayload
 from twitchio.ext import commands
 
 from .config import CLIENT_ID, CLIENT_SECRET
-from .handler import MessageKind, QueuedMessage
+from .handler import MessageKind, MessagePart, QueuedMessage
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+def _asset_to_url(asset: object) -> str:
+    """Best-effort conversion of TwitchIO asset-ish objects to a URL string."""
+    if asset is None:
+        return ""
+    if isinstance(asset, str):
+        return asset
+    for attr in ("url", "_url", "url_4x", "url_2x", "url_1x"):
+        value = getattr(asset, attr, None)
+        if callable(value):
+            value = value()
+        if isinstance(value, str) and value:
+            return value
+    if isinstance(asset, dict):
+        for key in ("url_4x", "url_2x", "url_1x", "url", "src"):
+            value = asset.get(key)
+            if isinstance(value, str) and value:
+                return value
+    value = str(asset)
+    if value.startswith(("http://", "https://")):
+        return value
+    return ""
+
+
+def _nested_attr(source: object, *path: str) -> object:
+    value = source
+    for attr in path:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            value = value.get(attr)
+        else:
+            value = getattr(value, attr, None)
+    return value
+
+
+def _fragment_emote_url(fragment: object) -> str:
+    """Extract an emote image URL from a Twitch message fragment when available."""
+    for path in (
+        ("url",),
+        ("image",),
+        ("images", "url_4x"),
+        ("images", "url_2x"),
+        ("images", "url_1x"),
+        ("emote", "url"),
+        ("emote", "image"),
+        ("emote", "images", "url_4x"),
+        ("emote", "images", "url_2x"),
+        ("emote", "images", "url_1x"),
+    ):
+        url = _asset_to_url(_nested_attr(fragment, *path))
+        if url:
+            return url
+
+    emote_id = (
+        _nested_attr(fragment, "emote", "id")
+        or _nested_attr(fragment, "emote_id")
+        or _nested_attr(fragment, "id")
+    )
+    if emote_id:
+        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/default/dark/3.0"
+    return ""
 
 
 async def get_user_id(username: str) -> str:
@@ -75,6 +138,7 @@ class VizBot(commands.AutoBot):
             message_queue: Queue for dispatching events to the handler.
         """
         self._message_queue = message_queue
+        self._avatar_url_cache: dict[str, str | None] = {}
         super().__init__(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
@@ -85,21 +149,77 @@ class VizBot(commands.AutoBot):
             force_subscribe=True,
         )
 
+    async def _get_avatar_url(self, chatter: object) -> str | None:
+        """Fetch and cache the chatter profile image URL for overlay avatars."""
+        chatter_id = getattr(chatter, "id", None) or getattr(chatter, "user_id", None)
+        login = (
+            getattr(chatter, "name", None)
+            or getattr(chatter, "login", None)
+            or getattr(chatter, "display_name", None)
+        )
+        cache_key = str(chatter_id or login or "").lower()
+        if not cache_key:
+            return None
+        if cache_key in self._avatar_url_cache:
+            return self._avatar_url_cache[cache_key]
+
+        try:
+            if chatter_id:
+                user = await self.fetch_user(id=str(chatter_id))
+            elif login:
+                user = await self.fetch_user(login=str(login))
+            else:
+                return None
+        except Exception as exc:
+            LOGGER.warning("Could not fetch avatar for %s: %s", cache_key, exc)
+            return None
+
+        avatar_url = _asset_to_url(getattr(user, "profile_image", None))
+        self._avatar_url_cache[cache_key] = avatar_url or None
+        return avatar_url or None
+
     async def event_message(self, payload: ChatMessage) -> None:
         """Handle incoming Twitch chat message by enqueuing it for visual dispatch.
 
         Args:
             payload: Chat message event from EventSub.
         """
-        # Join text fragments; skip emote/cheermote fragments which carry no readable text
-        text = " ".join(
-            fragment.text for fragment in payload.fragments if fragment.type == "text"
-        ).strip()
-        LOGGER.info("Received message: %s — %r", payload.chatter.name, text)
+        text_fragments: list[str] = []
+        emote_names: list[str] = []
+        parts: list[MessagePart] = []
+
+        for fragment in payload.fragments:
+            fragment_text = getattr(fragment, "text", "")
+            fragment_type = getattr(fragment, "type", "text")
+            if fragment_type == "emote":
+                emote_names.append(fragment_text)
+                parts.append(
+                    MessagePart(
+                        type="image",
+                        name=fragment_text,
+                        url=_fragment_emote_url(fragment),
+                    )
+                )
+            elif fragment_text:
+                text_fragments.append(fragment_text)
+                parts.append(MessagePart(type="text", text=fragment_text))
+
+        text = " ".join(fragment.strip() for fragment in text_fragments if fragment.strip())
+        avatar_url = await self._get_avatar_url(payload.chatter)
+        LOGGER.info(
+            "Received message: %s — text=%r emotes=%r avatar=%s",
+            payload.chatter.name,
+            text,
+            emote_names,
+            bool(avatar_url),
+        )
         await self._message_queue.put(
             QueuedMessage(
                 username=payload.chatter.name,
                 text=text,
+                avatar_url=avatar_url,
+                emote_names=emote_names,
+                parts=parts,
             )
         )
         await super().event_message(payload)
