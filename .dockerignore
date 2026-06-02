@@ -1,0 +1,17 @@
+.git/
+.ruff_cache/
+
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+backend/.venv/
+backend/__pycache__/
+backend/vizer/__pycache__/
+backend/tests/__pycache__/
+
+.env
+backend/.env
+backend/.tio.tokens.json
+
+data/

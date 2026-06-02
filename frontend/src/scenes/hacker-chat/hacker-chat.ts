@@ -1,43 +1,19 @@
 import * as PIXI from 'pixi.js';
 
-declare global {
-  interface Window {
-    VIZER_WS_URL?: string;
-  }
-}
-
-type VisualEventName = 'chat_message' | 'follow' | 'sub' | 'cheer' | 'raid' | 'gift_sub';
-
-interface EmoteItem {
-  name: string;
-  url: string;
-}
-
-interface MessagePart {
-  type: 'text' | 'image';
-  text?: string;
-  name?: string;
-  url?: string;
-}
-
-interface VisualEventMsg {
-  event: VisualEventName;
-  username: string;
-  text?: string;
-  color?: string;
-  seed?: number;
-  avatar_url?: string | null;
-  avatarUrl?: string | null;
-  emotes?: EmoteItem[];
-  parts?: MessagePart[];
-  data?: {
-    bits?: number;
-    viewers?: number;
-    total?: number;
-    tier?: string;
-    months?: number;
-  };
-}
+import {
+  clamp,
+  colorFromString,
+  formatEventLabel,
+  formatEventText,
+  hashSeed,
+  hslToRgb,
+  messageAvatarUrl,
+  mixColor,
+  OverlayEventSocket,
+  rgba,
+  seedRng,
+} from '../../shared/overlay';
+import type { VisualEventMsg, VisualEventName } from '../../shared/overlay';
 
 interface MatrixColumn {
   x: number;
@@ -67,119 +43,12 @@ const MAX_CARDS = 8;
 const FONT = '"Courier New", "Lucida Console", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
 const MATRIX_CHARS = '01#$%&*+-/<>{}[]ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-function seedRng(seed: number): () => number {
-  let s = (seed >>> 0) || 1;
-  return () => {
-    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
-    return s / 0xffffffff;
-  };
-}
-
-function hashSeed(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function colorFromString(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const normalized = value.startsWith('#') ? value.slice(1) : value;
-  const parsed = Number.parseInt(normalized, 16);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function hslToRgb(h: number, s: number, l: number): number {
-  const hue = ((h % 360) + 360) % 360;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
-  const m = l - c / 2;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-
-  if (hue < 60) [r, g, b] = [c, x, 0];
-  else if (hue < 120) [r, g, b] = [x, c, 0];
-  else if (hue < 180) [r, g, b] = [0, c, x];
-  else if (hue < 240) [r, g, b] = [0, x, c];
-  else if (hue < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-
-  return ((Math.round((r + m) * 255) << 16)
-    | (Math.round((g + m) * 255) << 8)
-    | Math.round((b + m) * 255));
-}
-
-function mixColor(a: number, b: number, t: number): number {
-  const clamped = clamp(t, 0, 1);
-  const ar = (a >> 16) & 0xff;
-  const ag = (a >> 8) & 0xff;
-  const ab = a & 0xff;
-  const br = (b >> 16) & 0xff;
-  const bg = (b >> 8) & 0xff;
-  const bb = b & 0xff;
-  return ((Math.round(ar + (br - ar) * clamped) << 16)
-    | (Math.round(ag + (bg - ag) * clamped) << 8)
-    | Math.round(ab + (bb - ab) * clamped));
-}
-
-function rgba(color: number, alpha: number): { color: number; alpha: number } {
-  return { color, alpha };
-}
-
-function defaultWebSocketUrl(): string {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = location.host || 'localhost:8080';
-  return `${proto}//${host}/ws`;
-}
-
-function normalizeWebSocketUrl(rawUrl: string | null | undefined): string {
-  const value = rawUrl?.trim();
-  if (!value) return defaultWebSocketUrl();
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (value.startsWith('/')) {
-    const host = location.host || 'localhost:8080';
-    return `${proto}//${host}${value}`;
-  }
-
-  const url = new URL(/^(https?|wss?):\/\//.test(value) ? value : `${proto}//${value}`);
-  if (url.protocol === 'http:') url.protocol = 'ws:';
-  if (url.protocol === 'https:') url.protocol = 'wss:';
-  if (url.pathname === '/') url.pathname = '/ws';
-  return url.toString();
-}
-
-function getWebSocketUrl(): string {
-  const params = new URLSearchParams(location.search);
-  return normalizeWebSocketUrl(
-    params.get('ws') ?? params.get('wsUrl') ?? window.VIZER_WS_URL,
-  );
-}
-
 function messageText(msg: VisualEventMsg): string {
-  if (msg.event === 'chat_message') return msg.text?.trim() || '...';
-  if (msg.event === 'follow') return 'joined the node';
-  if (msg.event === 'sub') {
-    const months = msg.data?.months;
-    return months ? `subscribed for ${months} months` : 'subscribed';
-  }
-  if (msg.event === 'gift_sub') {
-    const total = msg.data?.total ?? 1;
-    return `gifted ${total} subscription${total === 1 ? '' : 's'}`;
-  }
-  if (msg.event === 'cheer') return `cheered ${msg.data?.bits ?? 0} bits`;
-  return `raided with ${msg.data?.viewers ?? 0} viewers`;
+  return formatEventText(msg, 'joined the node');
 }
 
 function eventLabel(event: VisualEventName): string {
-  return event === 'chat_message' ? 'MSG' : event.replace('_', '-').toUpperCase();
+  return formatEventLabel(event, { chatLabel: 'MSG', separator: '-' });
 }
 
 function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmote[] } {
@@ -202,10 +71,6 @@ function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmo
       .filter((emote) => emote.url)
       .map((emote) => ({ name: emote.name, url: emote.url })),
   };
-}
-
-function messageAvatarUrl(msg: VisualEventMsg): string | null {
-  return msg.avatar_url ?? msg.avatarUrl ?? null;
 }
 
 function makePixelTexture(app: PIXI.Application): PIXI.Texture {
@@ -703,8 +568,10 @@ class HackerChatOverlay {
   private background: TerminalBackground | null = null;
   private userAccents = new Map<string, number>();
   private messageSerial = 0;
-  private ws: WebSocket | null = null;
-  private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly eventSocket = new OverlayEventSocket({
+    label: 'HackerChatOverlay',
+    onEvent: (msg) => this.spawn(msg),
+  });
   private sparkLayer: PIXI.Container | null = null;
   private sparks: DataSpark[] = [];
 
@@ -739,31 +606,7 @@ class HackerChatOverlay {
   }
 
   connectWebSocket(): void {
-    if (this.wsRetryTimer) {
-      clearTimeout(this.wsRetryTimer);
-      this.wsRetryTimer = null;
-    }
-
-    try {
-      const wsUrl = getWebSocketUrl();
-      const ws = new WebSocket(wsUrl);
-      this.ws = ws;
-      ws.onopen = () => console.log('[HackerChatOverlay] WebSocket connected:', wsUrl);
-      ws.onmessage = (evt: MessageEvent<string>) => {
-        try {
-          this.spawn(JSON.parse(evt.data) as VisualEventMsg);
-        } catch (error) {
-          console.warn('[HackerChatOverlay] WebSocket parse error:', error);
-        }
-      };
-      ws.onclose = () => {
-        this.wsRetryTimer = setTimeout(() => this.connectWebSocket(), 3000);
-      };
-      ws.onerror = () => ws.close();
-    } catch (error) {
-      console.warn('[HackerChatOverlay] WebSocket setup failed:', error);
-      this.wsRetryTimer = setTimeout(() => this.connectWebSocket(), 3000);
-    }
+    this.eventSocket.connect();
   }
 
   spawn(msg: VisualEventMsg): void {
@@ -899,53 +742,7 @@ class HackerChatOverlay {
   private seedPreview(): void {
     const params = new URLSearchParams(location.search);
     if (params.get('preview') === '0') return;
-    const examples: VisualEventMsg[] = [
-      {
-        event: 'chat_message',
-        username: 'rootkitten',
-        text: 'terminal overlay online 😎 chat stream captured.',
-        color: '#35ff6b',
-        seed: 1337,
-        avatar_url: 'https://static-cdn.jtvnw.net/jtv_user_pictures/xarth/404_user_70x70.png',
-      },
-      {
-        event: 'chat_message',
-        username: 'worxbend',
-        color: '#83ff9b',
-        seed: 2600,
-        parts: [
-          { type: 'text', text: 'typewriter packets render emotes ' },
-          {
-            type: 'image',
-            name: 'heart',
-            url: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/2764.png',
-          },
-          {
-            type: 'image',
-            name: 'Kappa',
-            url: 'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/3.0',
-          },
-        ],
-      },
-      {
-        event: 'cheer',
-        username: 'hexrelay',
-        color: '#b6ff4d',
-        seed: 8080,
-        data: { bits: 404 },
-      },
-      {
-        event: 'raid',
-        username: 'zeroday',
-        color: '#37f5ff',
-        seed: 4096,
-        data: { viewers: 64 },
-      },
-    ];
-    this.spawn(examples[0]);
-    setTimeout(() => this.spawn(examples[1]), 650);
-    setTimeout(() => this.spawn(examples[2]), 1300);
-    setTimeout(() => this.spawn(examples[3]), 1950);
+    this.spawn({ event: 'chat_message', username: 'worxbend', text: 'Welcome!', color: '#35ff6b', seed: 1 });
   }
 }
 

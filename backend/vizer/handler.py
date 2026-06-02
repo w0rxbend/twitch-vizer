@@ -13,10 +13,11 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
+from typing import Any
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -70,6 +71,23 @@ class QueuedMessage:
     avatar_url: str | None = None
     emote_names: list[str] = field(default_factory=list)
     parts: list[MessagePart] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MessageContent:
+    """Resolved message text and renderable inline parts."""
+
+    text: str
+    parts: list[MessagePart]
+    emotes: list[EmoteItem]
+
+
+@dataclass(frozen=True)
+class VisualIdentity:
+    """Stable per-user visual identity values."""
+
+    color: str
+    seed: int
 
 
 # ── Emoji / emote helpers ─────────────────────────────────────────────────────
@@ -166,22 +184,16 @@ def _split_text_emojis(text: str) -> tuple[str, list[MessagePart], list[EmoteIte
     return "".join(clean).strip(), parts, emotes
 
 
-# ── MessageHandler ────────────────────────────────────────────────────────────
+# ── Visual event collaborators ────────────────────────────────────────────────
 
-class MessageHandler:
-    """Dispatches queued messages as VisualEvents to connected WebSocket clients."""
+class EmoteCatalog:
+    """Resolves emote names to image URLs from a local cache and message hints."""
 
-    def __init__(
-        self,
-        broadcast: Callable[[VisualEvent], Awaitable[None]],
-        message_queue: asyncio.Queue["QueuedMessage"],
-        emotes_db_path: str | None = None,
-    ) -> None:
-        self._broadcast = broadcast
-        self._message_queue = message_queue
-        self._emotes = self._load_emotes(emotes_db_path)
+    def __init__(self, emotes: Mapping[str, dict[str, Any] | str] | None = None) -> None:
+        self._emotes = dict(emotes or {})
 
-    def _load_emotes(self, path: str | None) -> dict[str, dict | str]:
+    @classmethod
+    def from_file(cls, path: str | None) -> "EmoteCatalog":
         """Load emote name -> URL records from the backend/emotes cache.
 
         The cache mirrors twitch-voxer: emotes.db is a pickledb JSON file shaped
@@ -189,7 +201,7 @@ class MessageHandler:
         all_emotes.json from the same folder is also accepted as a list fallback.
         """
         if not path:
-            return {}
+            return cls()
 
         db_path = Path(path)
         if not db_path.exists():
@@ -198,13 +210,13 @@ class MessageHandler:
                 db_path = fallback
             else:
                 LOGGER.warning("Emotes DB not found at %s", path)
-                return {}
+                return cls()
 
         try:
             raw: object = json.loads(db_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             LOGGER.warning("Could not load emotes cache (%s): %s", db_path, exc)
-            return {}
+            return cls()
 
         if isinstance(raw, list):
             raw = {
@@ -215,46 +227,62 @@ class MessageHandler:
 
         if not isinstance(raw, dict):
             LOGGER.warning("Ignoring emotes cache with unexpected format: %s", db_path)
-            return {}
+            return cls()
 
-        emotes: dict[str, dict | str] = {
+        emotes: dict[str, dict[str, Any] | str] = {
             str(name): value
             for name, value in raw.items()
-            if isinstance(value, dict | str)
+            if isinstance(value, str) or isinstance(value, dict)
         }
         LOGGER.info("Loaded %d emotes from %s", len(emotes), db_path)
-        return emotes
+        return cls(emotes)
 
-    def _username_to_color(self, username: str) -> str:
-        """Derive a deterministic hex color from the username's SHA-256 hash."""
-        digest = hashlib.sha256(username.encode()).digest()
-        r, g, b = digest[0], digest[1], digest[2]
-        return f"#{r:02x}{g:02x}{b:02x}"
-
-    def _username_to_seed(self, username: str) -> int:
-        """Derive a deterministic integer seed from the username's SHA-256 hash."""
-        digest = hashlib.sha256(username.encode()).digest()
-        return int.from_bytes(digest[:4], "big") & 0xFFFFFF
-
-    def _resolve_emote(self, name: str, url: str = "") -> EmoteItem | None:
+    def resolve(self, name: str, url: str = "") -> EmoteItem | None:
         record = self._emotes.get(name)
         if isinstance(record, str) and record:
             return EmoteItem(name=name, url=record)
         if isinstance(record, dict):
-            resolved = (
-                record.get("url_4x")
-                or record.get("url_3x")
-                or record.get("url_2x")
-                or record.get("url_1x")
-                or record.get("url")
-            )
-            if isinstance(resolved, str) and resolved:
+            resolved = self._best_url(record)
+            if resolved:
                 return EmoteItem(name=name, url=resolved)
         if url:
             return EmoteItem(name=name, url=url)
         return None
 
-    def _message_content(self, message: QueuedMessage) -> tuple[str, list[MessagePart], list[EmoteItem]]:
+    def _best_url(self, record: Mapping[str, Any]) -> str:
+        resolved = (
+            record.get("url_4x")
+            or record.get("url_3x")
+            or record.get("url_2x")
+            or record.get("url_1x")
+            or record.get("url")
+        )
+        return resolved if isinstance(resolved, str) else ""
+
+
+class UserVisualIdentity:
+    """Builds deterministic visual identity values from a username."""
+
+    def for_username(self, username: str) -> VisualIdentity:
+        digest = hashlib.sha256(username.encode()).digest()
+        return VisualIdentity(
+            color=self._color_from_digest(digest),
+            seed=int.from_bytes(digest[:4], "big") & 0xFFFFFF,
+        )
+
+    def _color_from_digest(self, digest: bytes) -> str:
+        """Derive a deterministic hex color from the username's SHA-256 hash."""
+        r, g, b = digest[0], digest[1], digest[2]
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+
+class MessageContentResolver:
+    """Converts queued message fragments into overlay-ready content."""
+
+    def __init__(self, emote_catalog: EmoteCatalog) -> None:
+        self._emote_catalog = emote_catalog
+
+    def resolve(self, message: QueuedMessage) -> MessageContent:
         """Resolve queued text/emote fragments into clean text and inline render parts."""
         source_parts = message.parts or [MessagePart(type="text", text=message.text)]
         clean_segments: list[str] = []
@@ -263,7 +291,7 @@ class MessageHandler:
 
         for part in source_parts:
             if part.type == "image":
-                item = self._resolve_emote(part.name or part.text, part.url)
+                item = self._emote_catalog.resolve(part.name or part.text, part.url)
                 if item:
                     parts.append(MessagePart(type="image", name=item.name, url=item.url))
                     emotes.append(item)
@@ -277,34 +305,78 @@ class MessageHandler:
         for name in message.emote_names:
             if any(item.name == name for item in emotes):
                 continue
-            item = self._resolve_emote(name)
+            item = self._emote_catalog.resolve(name)
             if item:
                 parts.append(MessagePart(type="image", name=item.name, url=item.url))
                 emotes.append(item)
 
         clean_text = " ".join(segment for segment in clean_segments if segment).strip()
-        return clean_text, parts, emotes
+        return MessageContent(text=clean_text, parts=parts, emotes=emotes)
 
-    async def handle(self, message: QueuedMessage) -> None:
-        """Convert a queued message into a VisualEvent and broadcast it."""
+
+class VisualEventFactory:
+    """Creates broadcast payloads from queued messages."""
+
+    def __init__(
+        self,
+        content_resolver: MessageContentResolver,
+        identity: UserVisualIdentity,
+    ) -> None:
+        self._content_resolver = content_resolver
+        self._identity = identity
+
+    def create(self, message: QueuedMessage) -> VisualEvent:
         if message.kind is MessageKind.SYSTEM:
-            event = VisualEvent(
+            return VisualEvent(
                 event=message.system_event,
                 username=message.username,
                 data=message.system_data,
             )
-        else:
-            text, parts, emotes = self._message_content(message)
-            event = VisualEvent(
-                event="chat_message",
-                username=message.username,
-                text=text,
-                color=self._username_to_color(message.username),
-                seed=self._username_to_seed(message.username),
-                avatar_url=message.avatar_url,
-                emotes=emotes,
-                parts=parts,
-            )
+
+        content = self._content_resolver.resolve(message)
+        identity = self._identity.for_username(message.username)
+        return VisualEvent(
+            event="chat_message",
+            username=message.username,
+            text=content.text,
+            color=identity.color,
+            seed=identity.seed,
+            avatar_url=message.avatar_url,
+            emotes=content.emotes,
+            parts=content.parts,
+        )
+
+
+# ── MessageHandler ────────────────────────────────────────────────────────────
+
+class MessageHandler:
+    """Dispatches queued messages as VisualEvents to connected WebSocket clients."""
+
+    def __init__(
+        self,
+        broadcast: Callable[[VisualEvent], Awaitable[None]],
+        message_queue: asyncio.Queue["QueuedMessage"],
+        event_factory: VisualEventFactory,
+    ) -> None:
+        self._broadcast = broadcast
+        self._message_queue = message_queue
+        self._event_factory = event_factory
+
+    @classmethod
+    def with_default_factory(
+        cls,
+        broadcast: Callable[[VisualEvent], Awaitable[None]],
+        message_queue: asyncio.Queue["QueuedMessage"],
+        emotes_db_path: str | None = None,
+    ) -> "MessageHandler":
+        emotes = EmoteCatalog.from_file(emotes_db_path)
+        content_resolver = MessageContentResolver(emotes)
+        event_factory = VisualEventFactory(content_resolver, UserVisualIdentity())
+        return cls(broadcast, message_queue, event_factory)
+
+    async def handle(self, message: QueuedMessage) -> None:
+        """Convert a queued message into a VisualEvent and broadcast it."""
+        event = self._event_factory.create(message)
         LOGGER.info("Broadcasting %s event for %s", event.event, event.username)
         await self._broadcast(event)
 

@@ -25,6 +25,8 @@ indent-style = "space"
 include           = ["vizer", "main.py"]
 pythonVersion     = "3.12"
 typeCheckingMode  = "standard"
+venv               = ".venv"
+venvPath           = "."
 
 [dependency-groups]
 dev = [

@@ -24,7 +24,7 @@ from twitchio import ChatMessage, Client, eventsub, MultiSubscribePayload
 from twitchio.authentication import UserTokenPayload, ValidateTokenPayload
 from twitchio.ext import commands
 
-from .config import CLIENT_ID, CLIENT_SECRET
+from .config import TwitchCredentials
 from .handler import MessageKind, MessagePart, QueuedMessage
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -93,11 +93,11 @@ def _fragment_emote_url(fragment: object) -> str:
     return ""
 
 
-async def get_user_id(username: str) -> str:
+async def get_user_id(username: str, credentials: TwitchCredentials) -> str:
     """Fetch Twitch user ID by login name.
 
     Opens a short-lived API client, makes one GET /users call, then closes.
-    Called once at startup to resolve BOT_USERNAME → numeric ID.
+    Called once at startup to resolve the configured bot username to a numeric ID.
 
     Args:
         username: Twitch login name (slug, not display name).
@@ -108,7 +108,10 @@ async def get_user_id(username: str) -> str:
     Raises:
         ValueError: If user not found.
     """
-    async with Client(client_id=CLIENT_ID, client_secret=CLIENT_SECRET) as client:
+    async with Client(
+        client_id=credentials.client_id,
+        client_secret=credentials.client_secret,
+    ) as client:
         await client.login()
         users = await client.fetch_users(logins=[username])
         if not users:
@@ -129,6 +132,7 @@ class VizBot(commands.AutoBot):
         bot_id: str,
         subs: list[eventsub.SubscriptionPayload],
         message_queue: asyncio.Queue["QueuedMessage"],
+        credentials: TwitchCredentials,
     ) -> None:
         """Initialize the Twitch bot with EventSub subscriptions and message queue.
 
@@ -140,8 +144,8 @@ class VizBot(commands.AutoBot):
         self._message_queue = message_queue
         self._avatar_url_cache: dict[str, str | None] = {}
         super().__init__(
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret,
             bot_id=bot_id,
             owner_id=bot_id,
             prefix="!",
@@ -174,9 +178,67 @@ class VizBot(commands.AutoBot):
             LOGGER.warning("Could not fetch avatar for %s: %s", cache_key, exc)
             return None
 
-        avatar_url = _asset_to_url(getattr(user, "profile_image", None))
+        avatar_url = ""
+        for attr in ("profile_image", "profile_image_url", "profileImageUrl", "avatar_url", "avatar"):
+            avatar_url = _asset_to_url(getattr(user, attr, None))
+            if avatar_url:
+                break
         self._avatar_url_cache[cache_key] = avatar_url or None
         return avatar_url or None
+
+    def _display_name(self, user: object | None, fallback: str = "anonymous") -> str:
+        if user is None:
+            return fallback
+        name = (
+            getattr(user, "name", None)
+            or getattr(user, "login", None)
+            or getattr(user, "display_name", None)
+        )
+        return str(name) if name else fallback
+
+    async def _enqueue_system_event(
+        self,
+        *,
+        username: str,
+        event: str,
+        data: dict | None = None,
+    ) -> None:
+        await self._message_queue.put(
+            QueuedMessage(
+                username=username,
+                text="",
+                kind=MessageKind.SYSTEM,
+                system_event=event,
+                system_data=data or {},
+            )
+        )
+
+    def _subscriptions_for_user(self, user_id: str) -> list[eventsub.SubscriptionPayload]:
+        return [
+            eventsub.ChatMessageSubscription(
+                broadcaster_user_id=user_id,
+                user_id=self.bot_id,
+            ),
+            eventsub.ChannelFollowSubscription(
+                broadcaster_user_id=user_id,
+                moderator_user_id=self.bot_id,
+            ),
+            eventsub.ChannelSubscribeSubscription(
+                broadcaster_user_id=user_id,
+            ),
+            eventsub.ChannelSubscriptionGiftSubscription(
+                broadcaster_user_id=user_id,
+            ),
+            eventsub.ChannelSubscribeMessageSubscription(
+                broadcaster_user_id=user_id,
+            ),
+            eventsub.ChannelCheerSubscription(
+                broadcaster_user_id=user_id,
+            ),
+            eventsub.ChannelRaidSubscription(
+                to_broadcaster_user_id=user_id,
+            ),
+        ]
 
     async def event_message(self, payload: ChatMessage) -> None:
         """Handle incoming Twitch chat message by enqueuing it for visual dispatch.
@@ -205,17 +267,18 @@ class VizBot(commands.AutoBot):
                 parts.append(MessagePart(type="text", text=fragment_text))
 
         text = " ".join(fragment.strip() for fragment in text_fragments if fragment.strip())
+        username = self._display_name(payload.chatter, fallback="unknown")
         avatar_url = await self._get_avatar_url(payload.chatter)
         LOGGER.info(
             "Received message: %s — text=%r emotes=%r avatar=%s",
-            payload.chatter.name,
+            username,
             text,
             emote_names,
             bool(avatar_url),
         )
         await self._message_queue.put(
             QueuedMessage(
-                username=payload.chatter.name,
+                username=username,
                 text=text,
                 avatar_url=avatar_url,
                 emote_names=emote_names,
@@ -233,32 +296,11 @@ class VizBot(commands.AutoBot):
             payload: OAuth authorization payload with user_id and tokens.
         """
         await self.add_token(payload.access_token, payload.refresh_token)
+        if not payload.user_id:
+            LOGGER.warning("OAuth authorization did not include a user_id; skipping subscriptions")
+            return
 
-        subs: list[eventsub.SubscriptionPayload] = [
-            eventsub.ChatMessageSubscription(
-                broadcaster_user_id=payload.user_id,
-                user_id=self.bot_id,
-            ),
-            eventsub.ChannelFollowSubscription(
-                broadcaster_user_id=payload.user_id,
-                moderator_user_id=self.bot_id,
-            ),
-            eventsub.ChannelSubscribeSubscription(
-                broadcaster_user_id=payload.user_id,
-            ),
-            eventsub.ChannelSubscriptionGiftSubscription(
-                broadcaster_user_id=payload.user_id,
-            ),
-            eventsub.ChannelSubscribeMessageSubscription(
-                broadcaster_user_id=payload.user_id,
-            ),
-            eventsub.ChannelCheerSubscription(
-                broadcaster_user_id=payload.user_id,
-            ),
-            eventsub.ChannelRaidSubscription(
-                to_broadcaster_user_id=payload.user_id,
-            ),
-        ]
+        subs = self._subscriptions_for_user(payload.user_id)
         LOGGER.info("Subscribing for user: %s", payload.user_id)
         resp: MultiSubscribePayload = await self.multi_subscribe(subs)
         if resp.errors:
@@ -289,87 +331,58 @@ class VizBot(commands.AutoBot):
     # a typed system_event string and structured system_data dict.
 
     async def event_follow(self, payload: twitchio.ChannelFollow) -> None:
-        username = payload.user.name
+        username = self._display_name(payload.user)
         LOGGER.info("New follow from %s", username)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=username,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="follow",
-            )
-        )
+        await self._enqueue_system_event(username=username, event="follow")
 
     async def event_subscription(self, payload: twitchio.ChannelSubscribe) -> None:
         if payload.gift:
             return  # handled by event_subscription_gift
-        username = payload.user.name
+        username = self._display_name(payload.user)
         LOGGER.info("New subscription from %s (tier %s)", username, payload.tier)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=username,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="sub",
-                system_data={"tier": payload.tier},
-            )
+        await self._enqueue_system_event(
+            username=username,
+            event="sub",
+            data={"tier": payload.tier},
         )
 
     async def event_subscription_gift(
         self, payload: twitchio.ChannelSubscriptionGift
     ) -> None:
-        username = payload.user.name if payload.user else None
-        display = username or "anonymous"
+        display = self._display_name(payload.user)
         LOGGER.info("Gift sub from %s: %d subs", display, payload.total)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=display,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="gift_sub",
-                system_data={"total": payload.total},
-            )
+        await self._enqueue_system_event(
+            username=display,
+            event="gift_sub",
+            data={"total": payload.total},
         )
 
     async def event_subscription_message(
         self, payload: twitchio.ChannelSubscriptionMessage
     ) -> None:
-        username = payload.user.name
+        username = self._display_name(payload.user)
         LOGGER.info("Resub from %s (%d months)", username, payload.cumulative_months)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=username,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="sub",
-                system_data={"tier": payload.tier, "months": payload.cumulative_months},
-            )
+        await self._enqueue_system_event(
+            username=username,
+            event="sub",
+            data={"tier": payload.tier, "months": payload.cumulative_months},
         )
 
     async def event_cheer(self, payload: twitchio.ChannelCheer) -> None:
-        username = payload.user.name if payload.user else None
-        display = username or "anonymous"
+        display = self._display_name(payload.user)
         LOGGER.info("Cheer from %s: %d bits", display, payload.bits)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=display,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="cheer",
-                system_data={"bits": payload.bits},
-            )
+        await self._enqueue_system_event(
+            username=display,
+            event="cheer",
+            data={"bits": payload.bits},
         )
 
     async def event_raid(self, payload: twitchio.ChannelRaid) -> None:
-        raider = payload.from_broadcaster.name
+        raider = self._display_name(payload.from_broadcaster, fallback="unknown")
         viewers = payload.viewer_count
         LOGGER.info("Raid from %s with %d viewers", raider, viewers)
-        await self._message_queue.put(
-            QueuedMessage(
-                username=raider,
-                text="",
-                kind=MessageKind.SYSTEM,
-                system_event="raid",
-                system_data={"viewers": viewers},
-            )
+        await self._enqueue_system_event(
+            username=raider,
+            event="raid",
+            data={"viewers": viewers},
         )
