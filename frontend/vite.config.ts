@@ -23,6 +23,7 @@ export default defineConfig(({ command }) => ({
         fluidChat: resolve(__dirname, 'src/scenes/fluid-chat/index.html'),
         glitchOverlay: resolve(__dirname, 'src/scenes/glitch-overlay/index.html'),
         hackerChat: resolve(__dirname, 'src/scenes/hacker-chat/index.html'),
+        mrRobot: resolve(__dirname, 'src/scenes/mr-robot/index.html'),
         pixelChat: resolve(__dirname, 'src/scenes/pixel-chat/index.html'),
       },
     },
