@@ -1,6 +1,6 @@
 services:
   vizer:
-    build: .
+    image: ${DOCKER_USERNAME:-worxbend}/twitch-vizer:latest
     ports:
       - "8080:8080"
     env_file: .env

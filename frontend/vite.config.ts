@@ -21,6 +21,7 @@ export default defineConfig(({ command }) => ({
         chat: resolve(__dirname, 'src/scenes/chat/index.html'),
         emojiChat: resolve(__dirname, 'src/scenes/emoji-chat/index.html'),
         fluidChat: resolve(__dirname, 'src/scenes/fluid-chat/index.html'),
+        glitchOverlay: resolve(__dirname, 'src/scenes/glitch-overlay/index.html'),
         hackerChat: resolve(__dirname, 'src/scenes/hacker-chat/index.html'),
         pixelChat: resolve(__dirname, 'src/scenes/pixel-chat/index.html'),
       },
