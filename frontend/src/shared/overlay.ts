@@ -15,6 +15,10 @@ export type VisualEventName =
 export interface EmoteItem {
   name: string;
   url: string;
+  animated_url?: string;
+  animatedUrl?: string;
+  static_url?: string;
+  staticUrl?: string;
 }
 
 export interface MessagePart {
@@ -22,6 +26,10 @@ export interface MessagePart {
   text?: string;
   name?: string;
   url?: string;
+  animated_url?: string;
+  animatedUrl?: string;
+  static_url?: string;
+  staticUrl?: string;
 }
 
 export interface VisualEventMsg {
@@ -266,7 +274,17 @@ export function renderParts(
 
   const fallback: MessagePart[] = [{ type: 'text', text: fallbackText }];
   for (const emote of msg.emotes ?? []) {
-    if (emote.url) fallback.push({ type: 'image', name: emote.name, url: emote.url });
+    if (emote.url) {
+      fallback.push({
+        type: 'image',
+        name: emote.name,
+        url: emote.url,
+        animated_url: emote.animated_url,
+        animatedUrl: emote.animatedUrl,
+        static_url: emote.static_url,
+        staticUrl: emote.staticUrl,
+      });
+    }
   }
   return fallback;
 }

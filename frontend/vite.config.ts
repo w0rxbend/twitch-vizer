@@ -18,6 +18,7 @@ export default defineConfig(({ command }) => ({
     emptyOutDir: true,
     rollupOptions: {
       input: {
+        index: resolve(__dirname, 'src/scenes/index.html'),
         chat: resolve(__dirname, 'src/scenes/chat/index.html'),
         emojiChat: resolve(__dirname, 'src/scenes/emoji-chat/index.html'),
         fluidChat: resolve(__dirname, 'src/scenes/fluid-chat/index.html'),
@@ -26,7 +27,9 @@ export default defineConfig(({ command }) => ({
         grunge: resolve(__dirname, 'src/scenes/grunge/index.html'),
         mrRobot: resolve(__dirname, 'src/scenes/mr-robot/index.html'),
         pixelChat: resolve(__dirname, 'src/scenes/pixel-chat/index.html'),
+        razerPixelChat: resolve(__dirname, 'src/scenes/razer-pixel-chat/index.html'),
         siliconValley: resolve(__dirname, 'src/scenes/silicon-valley/index.html'),
+        statusLine: resolve(__dirname, 'src/scenes/status-line/index.html'),
       },
     },
   },

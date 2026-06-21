@@ -30,26 +30,36 @@ from .handler import MessageKind, MessagePart, QueuedMessage
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
+def _plain_twitch_emote_url(url: str) -> str:
+    """Prefer static Twitch emotes so clients do not retry animated fallbacks."""
+    return url.replace("/animated/", "/static/").replace("/default/", "/static/")
+
+
+def _animated_twitch_emote_url(url: str) -> str:
+    """Build the matching animated Twitch CDN URL when possible."""
+    return url.replace("/static/", "/animated/").replace("/default/", "/animated/")
+
+
 def _asset_to_url(asset: object) -> str:
     """Best-effort conversion of TwitchIO asset-ish objects to a URL string."""
     if asset is None:
         return ""
     if isinstance(asset, str):
-        return asset
+        return _plain_twitch_emote_url(asset)
     for attr in ("url", "_url", "url_4x", "url_2x", "url_1x"):
         value = getattr(asset, attr, None)
         if callable(value):
             value = value()
         if isinstance(value, str) and value:
-            return value
+            return _plain_twitch_emote_url(value)
     if isinstance(asset, dict):
-        for key in ("url_4x", "url_2x", "url_1x", "url", "src"):
+        for key in ("static_url", "url_4x", "url_2x", "url_1x", "url", "src"):
             value = asset.get(key)
             if isinstance(value, str) and value:
-                return value
+                return _plain_twitch_emote_url(value)
     value = str(asset)
     if value.startswith(("http://", "https://")):
-        return value
+        return _plain_twitch_emote_url(value)
     return ""
 
 
@@ -89,8 +99,98 @@ def _fragment_emote_url(fragment: object) -> str:
         or _nested_attr(fragment, "id")
     )
     if emote_id:
-        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/default/dark/3.0"
+        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/static/dark/3.0"
     return ""
+
+
+def _fragment_animated_emote_url(fragment: object) -> str:
+    """Return an animated Twitch emote URL candidate for clients that support GIFs."""
+    emote_id = (
+        _nested_attr(fragment, "emote", "id")
+        or _nested_attr(fragment, "emote_id")
+        or _nested_attr(fragment, "id")
+    )
+    if emote_id:
+        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/animated/dark/3.0"
+
+    static_url = _fragment_emote_url(fragment)
+    if not static_url:
+        return ""
+    animated_url = _animated_twitch_emote_url(static_url)
+    return animated_url if animated_url != static_url else ""
+
+
+def _string_value(value: object, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        return value
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str):
+        return enum_value
+    enum_name = getattr(value, "name", None)
+    if isinstance(enum_name, str):
+        return enum_name
+    return str(value)
+
+
+def _fragment_text(fragment: object) -> str:
+    value = _nested_attr(fragment, "text")
+    if isinstance(value, str):
+        return value
+    value = _nested_attr(fragment, "content")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _fragment_type(fragment: object) -> str:
+    value = (
+        _nested_attr(fragment, "type")
+        or _nested_attr(fragment, "fragment_type")
+        or _nested_attr(fragment, "kind")
+    )
+    return _string_value(value, "text").lower()
+
+
+def _message_parts_from_fragments(
+    fragments: object,
+    fallback_text: str = "",
+) -> tuple[str, list[str], list[MessagePart]]:
+    """Convert TwitchIO/EventSub fragments into text, emote names, and render parts."""
+    text_fragments: list[str] = []
+    emote_names: list[str] = []
+    parts: list[MessagePart] = []
+
+    if not isinstance(fragments, list | tuple) or not fragments:
+        if fallback_text:
+            return fallback_text, [], [MessagePart(type="text", text=fallback_text)]
+        return "", [], []
+
+    for fragment in fragments:
+        fragment_text = _fragment_text(fragment)
+        fragment_type = _fragment_type(fragment)
+
+        if fragment_type == "emote":
+            emote_name = fragment_text or _string_value(_nested_attr(fragment, "emote", "name"))
+            emote_names.append(emote_name)
+            parts.append(
+                MessagePart(
+                    type="image",
+                    name=emote_name,
+                    url=_fragment_emote_url(fragment),
+                    animated_url=_fragment_animated_emote_url(fragment),
+                    static_url=_fragment_emote_url(fragment),
+                )
+            )
+            continue
+
+        if fragment_text:
+            text_fragments.append(fragment_text)
+            parts.append(MessagePart(type="text", text=fragment_text))
+
+    text = "".join(text_fragments).strip()
+    return text, emote_names, parts
 
 
 async def get_user_id(username: str, credentials: TwitchCredentials) -> str:
@@ -246,27 +346,10 @@ class VizBot(commands.AutoBot):
         Args:
             payload: Chat message event from EventSub.
         """
-        text_fragments: list[str] = []
-        emote_names: list[str] = []
-        parts: list[MessagePart] = []
-
-        for fragment in payload.fragments:
-            fragment_text = getattr(fragment, "text", "")
-            fragment_type = getattr(fragment, "type", "text")
-            if fragment_type == "emote":
-                emote_names.append(fragment_text)
-                parts.append(
-                    MessagePart(
-                        type="image",
-                        name=fragment_text,
-                        url=_fragment_emote_url(fragment),
-                    )
-                )
-            elif fragment_text:
-                text_fragments.append(fragment_text)
-                parts.append(MessagePart(type="text", text=fragment_text))
-
-        text = " ".join(fragment.strip() for fragment in text_fragments if fragment.strip())
+        text, emote_names, parts = _message_parts_from_fragments(
+            getattr(payload, "fragments", []),
+            fallback_text=getattr(payload, "text", ""),
+        )
         username = self._display_name(payload.chatter, fallback="unknown")
         avatar_url = await self._get_avatar_url(payload.chatter)
         LOGGER.info(

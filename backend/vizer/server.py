@@ -56,6 +56,17 @@ class VizServer:
             name = request.path_params["name"]
             return RedirectResponse(url=f"/scenes/{name}/", status_code=301)
 
+        async def scenes_redirect(request: Request) -> RedirectResponse:
+            return RedirectResponse(url="/scenes/", status_code=301)
+
+        async def scenes_index(request: Request) -> Response:
+            page = (_SCENES_DIR / "index.html").resolve()
+            if not page.is_relative_to(_SCENES_DIR.resolve()):
+                return Response("Not found", status_code=404)
+            if not page.exists():
+                return Response("Scenes index not found", status_code=404)
+            return FileResponse(page, headers={"Cache-Control": "no-store"})
+
         async def scene_page(request: Request) -> Response:
             name = request.path_params["name"]
             # Resolve and guard against path traversal
@@ -92,6 +103,8 @@ class VizServer:
         routes = [
             Route("/", index),
             Route("/favicon.ico", favicon),
+            Route("/scenes", scenes_redirect),
+            Route("/scenes/", scenes_index),
             Route("/scenes/{name}", scene_redirect),
             Route("/scenes/{name}/", scene_page),
             WebSocketRoute("/ws", ws_endpoint),

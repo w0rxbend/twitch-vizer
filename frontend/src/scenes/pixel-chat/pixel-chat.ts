@@ -1,5 +1,6 @@
 import * as PIXI from 'pixi.js';
 
+import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
   clamp,
   colorFromString,
@@ -15,6 +16,12 @@ import {
   seedRng,
 } from '../../shared/overlay';
 import type { MessagePart, VisualEventMsg, VisualEventName } from '../../shared/overlay';
+
+declare global {
+  interface Window {
+    PIXEL_CHAT_THEME?: 'razer';
+  }
+}
 
 interface Palette {
   night: number;
@@ -47,6 +54,16 @@ const MAX_CARDS = 7;
 const FONT = '"Courier New", "Lucida Console", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
 const TEXT_WHITE = 0xffffff;
 const TEXT_BLACK = 0x050507;
+const RAZER_BLACK = 0x000000;
+const RAZER_DEEP = 0x020802;
+const RAZER_DARK = 0x061906;
+const RAZER_GREEN = 0x54f044;
+const RAZER_TOXIC = 0x38ff24;
+const RAZER_ACID = 0x8cff68;
+
+function isRazerTheme(): boolean {
+  return window.PIXEL_CHAT_THEME === 'razer' || location.pathname.includes('razer-pixel-chat');
+}
 
 function snap(value: number, grid = PX): number {
   return Math.round(value / grid) * grid;
@@ -84,6 +101,28 @@ function luminance(color: number): number {
 }
 
 function makePalette(seed: number, userAccent: number): Palette {
+  if (isRazerTheme()) {
+    const rng = seedRng(seed ^ 0x0badbabe);
+    const toxic = mixColor(RAZER_TOXIC, RAZER_GREEN, rng() * 0.24);
+    const acid = mixColor(RAZER_ACID, RAZER_TOXIC, rng() * 0.32);
+    const plate = mixColor(RAZER_DARK, toxic, 0.22 + rng() * 0.14);
+    const plateDeep = mixColor(RAZER_BLACK, RAZER_DEEP, 0.68);
+    return {
+      night: RAZER_BLACK,
+      plate,
+      plateDeep,
+      ink: 0xf7fff4,
+      edge: acid,
+      line: toxic,
+      flower: mixColor(acid, RAZER_GREEN, 0.38),
+      leaf: RAZER_GREEN,
+      gold: mixColor(RAZER_TOXIC, RAZER_ACID, 0.44),
+      blue: mixColor(RAZER_DARK, RAZER_GREEN, 0.44),
+      rose: mixColor(RAZER_TOXIC, 0xffffff, 0.08),
+      violet: mixColor(RAZER_BLACK, RAZER_TOXIC, 0.30),
+    };
+  }
+
   const rng = seedRng(seed ^ 0x87ab3d1);
   const hue = Math.floor(rng() * 360);
   const plateHue = hue + [0, 34, 96, 148, 203, 276][seed % 6];
@@ -202,6 +241,16 @@ class TextilePlate {
   }
 
   private ribbonSchemes(palette: Palette, userAccent: number): number[][] {
+    if (isRazerTheme()) {
+      return [
+        [RAZER_BLACK, RAZER_DEEP, RAZER_DARK, RAZER_GREEN, RAZER_TOXIC, RAZER_ACID],
+        [0x000000, 0x031003, 0x0a2608, 0x1fd816, 0x38ff24, 0x8cff68],
+        [0x010401, 0x071807, 0x103b0c, 0x44d62c, 0x54f044, 0x9cff86],
+        [mixColor(RAZER_BLACK, RAZER_GREEN, 0.18), RAZER_BLACK, RAZER_TOXIC, RAZER_DEEP, RAZER_ACID],
+        [palette.night, palette.plateDeep, palette.plate, palette.line, palette.edge, palette.ink],
+      ];
+    }
+
     return [
       [0xcac2c2, 0x3f2d44, 0xffc0d8, 0xee73c8, 0x755d94],
       [0xb9cbb6, 0xf4c2b7, 0xe9958d, 0xd86fac, 0x8a4961],
@@ -1865,7 +1914,7 @@ class PixelChatCard {
       }
     };
     const addImage = (part: MessagePart) => {
-      if (!part.url) return;
+      if (!part.url && !part.animated_url && !part.animatedUrl) return;
       const holder = new PIXI.Container();
       holder.addChild(new PIXI.Graphics()
         .rect(0, 0, imageSize, imageSize).fill(rgba(palette.night, 0.70))
@@ -1884,20 +1933,16 @@ class PixelChatCard {
   }
 
   private loadInlineImage(part: MessagePart, holder: PIXI.Container, size: number): void {
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.referrerPolicy = 'no-referrer';
-    image.onload = () => {
+    loadEmoteDisplay(part)
+      .then((sprite) => {
       if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-      const sprite = new PIXI.Sprite(PIXI.Texture.from(image));
       sprite.roundPixels = true;
-      const scale = (size - 4) / Math.max(image.naturalWidth, image.naturalHeight, 1);
-      sprite.scale.set(scale);
-      sprite.x = Math.round((size - sprite.width) / 2);
-      sprite.y = Math.round((size - sprite.height) / 2);
+      fitDisplayObject(sprite, size - 4);
+      sprite.x += 2;
+      sprite.y += 2;
       holder.addChild(sprite);
-    };
-    image.onerror = () => {
+    })
+    .catch(() => {
       if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
       const fallback = new PIXI.Text({
         text: part.name?.trim() || '?',
@@ -1907,8 +1952,7 @@ class PixelChatCard {
       fallback.x = Math.round((size - fallback.width) / 2);
       fallback.y = Math.round((size - fallback.height) / 2);
       holder.addChild(fallback);
-    };
-    image.src = part.url;
+    });
   }
 
   private drawNoise(amount: number): void {
@@ -2135,6 +2179,16 @@ class PixelChatOverlay {
   private userAccent(msg: VisualEventMsg, userKey: string, userSeed: number): number {
     const existing = this.userAccents.get(userKey);
     if (existing !== undefined) return existing;
+    if (isRazerTheme()) {
+      const rng = seedRng(userSeed ^ 0x44d62c);
+      const color = mixColor(
+        rng() > 0.5 ? RAZER_TOXIC : RAZER_GREEN,
+        RAZER_ACID,
+        0.18 + rng() * 0.32,
+      );
+      this.userAccents.set(userKey, color);
+      return color;
+    }
     const fallback = hslToRgb(userSeed % 360, 0.82, 0.58);
     const color = colorFromString(msg.color, fallback);
     this.userAccents.set(userKey, color);

@@ -24,10 +24,16 @@ class EmoteCatalogTest(unittest.TestCase):
     def test_uses_message_url_when_cache_misses(self) -> None:
         catalog = EmoteCatalog()
 
-        emote = catalog.resolve("Party", "party.png")
+        emote = catalog.resolve(
+            "Party",
+            "https://static-cdn.jtvnw.net/emoticons/v2/1/animated/dark/3.0",
+        )
 
         self.assertIsNotNone(emote)
-        self.assertEqual(emote.url, "party.png")
+        self.assertEqual(
+            emote.url,
+            "https://static-cdn.jtvnw.net/emoticons/v2/1/static/dark/3.0",
+        )
 
 
 class MessageContentResolverTest(unittest.TestCase):

@@ -1,5 +1,6 @@
 import * as PIXI from 'pixi.js';
 
+import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
   clamp,
   colorFromString,
@@ -527,14 +528,14 @@ class ChatCard {
     };
 
     const addImage = (part: MessagePart) => {
-      if (!part.url) return;
+      if (!part.url && !part.animated_url && !part.animatedUrl) return;
       const holder = new PIXI.Container();
       const backing = new PIXI.Graphics()
         .circle(imageSize / 2, imageSize / 2, imageSize / 2)
         .fill(rgba(palette.foam, 0.18))
         .stroke({ color: palette.foam, width: 1.5, alpha: 0.42 });
       holder.addChild(backing);
-      this.loadInlineImage(part.url, holder, imageSize);
+      this.loadInlineImage(part, holder, imageSize);
       place(holder, imageSize, imageSize);
     };
 
@@ -547,16 +548,13 @@ class ChatCard {
     return content;
   }
 
-  private loadInlineImage(url: string, holder: PIXI.Container, size: number): void {
-    PIXI.Assets.load<PIXI.Texture>({ src: url, parser: 'texture' })
-      .then((texture) => {
+  private loadInlineImage(part: MessagePart, holder: PIXI.Container, size: number): void {
+    loadEmoteDisplay(part)
+      .then((sprite) => {
         if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-        const sprite = new PIXI.Sprite(texture);
-        const maxSide = Math.max(sprite.width, sprite.height, 1);
-        const scale = (size - 3) / maxSide;
-        sprite.scale.set(scale);
-        sprite.x = Math.round((size - sprite.width) / 2);
-        sprite.y = Math.round((size - sprite.height) / 2);
+        fitDisplayObject(sprite, size - 3);
+        sprite.x += 1;
+        sprite.y += 1;
         holder.addChild(sprite);
       })
       .catch(() => {

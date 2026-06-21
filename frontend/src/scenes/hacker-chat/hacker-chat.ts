@@ -1,5 +1,6 @@
 import * as PIXI from 'pixi.js';
 
+import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
   clamp,
   colorFromString,
@@ -35,6 +36,8 @@ interface DataSpark {
 interface TerminalEmote {
   name: string;
   url: string;
+  animated_url?: string;
+  static_url?: string;
 }
 
 const CARD_GAP = 10;
@@ -57,7 +60,14 @@ function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmo
   if (parts.length > 0) {
     const rendered = parts.map((part) => {
       if (part.type === 'image') {
-        if (part.url) emotes.push({ name: part.name ?? 'emote', url: part.url });
+        if (part.url || part.animated_url || part.animatedUrl) {
+          emotes.push({
+            name: part.name ?? 'emote',
+            url: part.url ?? '',
+            animated_url: part.animated_url ?? part.animatedUrl,
+            static_url: part.static_url ?? part.staticUrl,
+          });
+        }
         return '';
       }
       return part.text ?? '';
@@ -69,7 +79,12 @@ function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmo
     text: messageText(msg),
     emotes: (msg.emotes ?? [])
       .filter((emote) => emote.url)
-      .map((emote) => ({ name: emote.name, url: emote.url })),
+      .map((emote) => ({
+        name: emote.name,
+        url: emote.url,
+        animated_url: emote.animated_url ?? emote.animatedUrl,
+        static_url: emote.static_url ?? emote.staticUrl,
+      })),
   };
 }
 
@@ -390,23 +405,20 @@ class HackerCard {
       holder.x = x;
       holder.y = y;
       holder.addChild(frame);
-      this.loadEmoteImage(emote.url, holder, chip, emote.name);
+      this.loadEmoteImage(emote, holder, chip, emote.name);
       this.emoteLayer.addChild(holder);
       x += chip + gap;
     }
   }
 
-  private loadEmoteImage(url: string, holder: PIXI.Container, size: number, name: string): void {
-    PIXI.Assets.load<PIXI.Texture>({ src: url, parser: 'texture' })
-      .then((texture) => {
+  private loadEmoteImage(emote: TerminalEmote, holder: PIXI.Container, size: number, name: string): void {
+    loadEmoteDisplay(emote)
+      .then((sprite) => {
         if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-        const sprite = new PIXI.Sprite(texture);
         sprite.roundPixels = true;
-        const maxSide = Math.max(sprite.width, sprite.height, 1);
-        const scale = (size - 4) / maxSide;
-        sprite.scale.set(scale);
-        sprite.x = Math.round((size - sprite.width) / 2);
-        sprite.y = Math.round((size - sprite.height) / 2);
+        fitDisplayObject(sprite, size - 4);
+        sprite.x += 2;
+        sprite.y += 2;
         holder.addChild(sprite);
       })
       .catch(() => {

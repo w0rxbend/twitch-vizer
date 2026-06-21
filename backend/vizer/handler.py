@@ -22,6 +22,11 @@ from typing import Any
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
+def _plain_twitch_emote_url(url: str) -> str:
+    """Prefer Twitch static emote images for broad OBS/browser compatibility."""
+    return url.replace("/animated/", "/static/").replace("/default/", "/static/")
+
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -29,6 +34,8 @@ class EmoteItem:
     """A single Twitch emote or Unicode emoji image sent to the overlay."""
     name: str
     url: str
+    animated_url: str = ""
+    static_url: str = ""
 
 
 @dataclass
@@ -38,6 +45,8 @@ class MessagePart:
     text: str = ""
     name: str = ""
     url: str = ""
+    animated_url: str = ""
+    static_url: str = ""
 
 
 @dataclass
@@ -240,13 +249,27 @@ class EmoteCatalog:
     def resolve(self, name: str, url: str = "") -> EmoteItem | None:
         record = self._emotes.get(name)
         if isinstance(record, str) and record:
-            return EmoteItem(name=name, url=record)
+            static_url = _plain_twitch_emote_url(record)
+            return EmoteItem(name=name, url=static_url, static_url=static_url)
         if isinstance(record, dict):
             resolved = self._best_url(record)
             if resolved:
-                return EmoteItem(name=name, url=resolved)
+                animated = self._animated_url(record)
+                return EmoteItem(
+                    name=name,
+                    url=resolved,
+                    animated_url=animated,
+                    static_url=resolved,
+                )
         if url:
-            return EmoteItem(name=name, url=url)
+            static_url = _plain_twitch_emote_url(url)
+            animated_url = url.replace("/static/", "/animated/")
+            return EmoteItem(
+                name=name,
+                url=static_url,
+                animated_url=animated_url if animated_url != static_url else "",
+                static_url=static_url,
+            )
         return None
 
     def _best_url(self, record: Mapping[str, Any]) -> str:
@@ -257,7 +280,15 @@ class EmoteCatalog:
             or record.get("url_1x")
             or record.get("url")
         )
-        return resolved if isinstance(resolved, str) else ""
+        return _plain_twitch_emote_url(resolved) if isinstance(resolved, str) else ""
+
+    def _animated_url(self, record: Mapping[str, Any]) -> str:
+        resolved = record.get("animated_url") or record.get("url_animated")
+        if isinstance(resolved, str):
+            return resolved
+        static = self._best_url(record)
+        animated = static.replace("/static/", "/animated/")
+        return animated if animated != static else ""
 
 
 class UserVisualIdentity:
@@ -293,7 +324,15 @@ class MessageContentResolver:
             if part.type == "image":
                 item = self._emote_catalog.resolve(part.name or part.text, part.url)
                 if item:
-                    parts.append(MessagePart(type="image", name=item.name, url=item.url))
+                    parts.append(
+                        MessagePart(
+                            type="image",
+                            name=item.name,
+                            url=item.url,
+                            animated_url=item.animated_url,
+                            static_url=item.static_url or item.url,
+                        )
+                    )
                     emotes.append(item)
                 continue
 
@@ -307,7 +346,15 @@ class MessageContentResolver:
                 continue
             item = self._emote_catalog.resolve(name)
             if item:
-                parts.append(MessagePart(type="image", name=item.name, url=item.url))
+                parts.append(
+                    MessagePart(
+                        type="image",
+                        name=item.name,
+                        url=item.url,
+                        animated_url=item.animated_url,
+                        static_url=item.static_url or item.url,
+                    )
+                )
                 emotes.append(item)
 
         clean_text = " ".join(segment for segment in clean_segments if segment).strip()
