@@ -18,6 +18,7 @@ Subscriptions are registered in two places:
 
 import asyncio
 import logging
+from typing import Any
 
 import twitchio
 from twitchio import ChatMessage, Client, eventsub, MultiSubscribePayload
@@ -25,19 +26,25 @@ from twitchio.authentication import UserTokenPayload, ValidateTokenPayload
 from twitchio.ext import commands
 
 from .config import TwitchCredentials
-from .handler import MessageKind, MessagePart, QueuedMessage
+from .emote_urls import (
+    animated_twitch_emote_url,
+    plain_twitch_emote_url,
+    twitch_emote_cdn_url,
+)
+from .handler import EventType, MessageKind, MessagePart, QueuedMessage
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
+# Chatter avatar URLs are cached per user; the cap keeps memory bounded on
+# long-running processes with busy chats (oldest entries are evicted first).
+_AVATAR_CACHE_MAX_SIZE = 1024
 
-def _plain_twitch_emote_url(url: str) -> str:
-    """Prefer static Twitch emotes so clients do not retry animated fallbacks."""
-    return url.replace("/animated/", "/static/").replace("/default/", "/static/")
 
-
-def _animated_twitch_emote_url(url: str) -> str:
-    """Build the matching animated Twitch CDN URL when possible."""
-    return url.replace("/static/", "/animated/").replace("/default/", "/animated/")
+# ── twitchio payload probing ──────────────────────────────────────────────────
+# EventSub payloads reach us either as twitchio model objects or as raw dicts,
+# and field spellings have drifted between twitchio releases.  These helpers
+# take `object` on purpose and probe a few known shapes so a twitchio upgrade
+# degrades gracefully (missing URL / empty text) instead of crashing the bot.
 
 
 def _asset_to_url(asset: object) -> str:
@@ -45,21 +52,21 @@ def _asset_to_url(asset: object) -> str:
     if asset is None:
         return ""
     if isinstance(asset, str):
-        return _plain_twitch_emote_url(asset)
+        return plain_twitch_emote_url(asset)
     for attr in ("url", "_url", "url_4x", "url_2x", "url_1x"):
         value = getattr(asset, attr, None)
         if callable(value):
             value = value()
         if isinstance(value, str) and value:
-            return _plain_twitch_emote_url(value)
+            return plain_twitch_emote_url(value)
     if isinstance(asset, dict):
         for key in ("static_url", "url_4x", "url_2x", "url_1x", "url", "src"):
             value = asset.get(key)
             if isinstance(value, str) and value:
-                return _plain_twitch_emote_url(value)
+                return plain_twitch_emote_url(value)
     value = str(asset)
     if value.startswith(("http://", "https://")):
-        return _plain_twitch_emote_url(value)
+        return plain_twitch_emote_url(value)
     return ""
 
 
@@ -99,7 +106,7 @@ def _fragment_emote_url(fragment: object) -> str:
         or _nested_attr(fragment, "id")
     )
     if emote_id:
-        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/static/dark/3.0"
+        return twitch_emote_cdn_url(str(emote_id))
     return ""
 
 
@@ -111,12 +118,12 @@ def _fragment_animated_emote_url(fragment: object) -> str:
         or _nested_attr(fragment, "id")
     )
     if emote_id:
-        return f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/animated/dark/3.0"
+        return twitch_emote_cdn_url(str(emote_id), animated=True)
 
     static_url = _fragment_emote_url(fragment)
     if not static_url:
         return ""
-    animated_url = _animated_twitch_emote_url(static_url)
+    animated_url = animated_twitch_emote_url(static_url)
     return animated_url if animated_url != static_url else ""
 
 
@@ -172,7 +179,9 @@ def _message_parts_from_fragments(
         fragment_type = _fragment_type(fragment)
 
         if fragment_type == "emote":
-            emote_name = fragment_text or _string_value(_nested_attr(fragment, "emote", "name"))
+            emote_name = fragment_text or _string_value(
+                _nested_attr(fragment, "emote", "name")
+            )
             emote_names.append(emote_name)
             parts.append(
                 MessagePart(
@@ -233,6 +242,7 @@ class VizBot(commands.AutoBot):
         subs: list[eventsub.SubscriptionPayload],
         message_queue: asyncio.Queue["QueuedMessage"],
         credentials: TwitchCredentials,
+        token_file: str | None = None,
     ) -> None:
         """Initialize the Twitch bot with EventSub subscriptions and message queue.
 
@@ -240,8 +250,11 @@ class VizBot(commands.AutoBot):
             bot_id: Twitch user ID of the bot account.
             subs: List of EventSub subscriptions to register at connection time.
             message_queue: Queue for dispatching events to the handler.
+            token_file: Path for twitchio's OAuth token store; None keeps the
+                twitchio default (.tio.tokens.json in the working directory).
         """
         self._message_queue = message_queue
+        self._token_file = token_file
         self._avatar_url_cache: dict[str, str | None] = {}
         super().__init__(
             client_id=credentials.client_id,
@@ -276,15 +289,20 @@ class VizBot(commands.AutoBot):
                 return None
         except Exception as exc:
             LOGGER.warning("Could not fetch avatar for %s: %s", cache_key, exc)
+            # Cache the failure so a Helix outage is not retried per message.
+            self._cache_avatar_url(cache_key, None)
             return None
 
-        avatar_url = ""
-        for attr in ("profile_image", "profile_image_url", "profileImageUrl", "avatar_url", "avatar"):
-            avatar_url = _asset_to_url(getattr(user, attr, None))
-            if avatar_url:
-                break
-        self._avatar_url_cache[cache_key] = avatar_url or None
+        # twitchio 3.x User exposes profile_image as an Asset object.
+        avatar_url = _asset_to_url(getattr(user, "profile_image", None))
+        self._cache_avatar_url(cache_key, avatar_url or None)
         return avatar_url or None
+
+    def _cache_avatar_url(self, cache_key: str, avatar_url: str | None) -> None:
+        if len(self._avatar_url_cache) >= _AVATAR_CACHE_MAX_SIZE:
+            oldest_key = next(iter(self._avatar_url_cache))
+            del self._avatar_url_cache[oldest_key]
+        self._avatar_url_cache[cache_key] = avatar_url
 
     def _display_name(self, user: object | None, fallback: str = "anonymous") -> str:
         if user is None:
@@ -296,12 +314,20 @@ class VizBot(commands.AutoBot):
         )
         return str(name) if name else fallback
 
+    async def load_tokens(self, path: str | None = None, /) -> None:
+        """Load persisted OAuth tokens, defaulting to the configured token file."""
+        await super().load_tokens(path or self._token_file)
+
+    async def save_tokens(self, path: str | None = None, /) -> None:
+        """Persist OAuth tokens, defaulting to the configured token file."""
+        await super().save_tokens(path or self._token_file)
+
     async def _enqueue_system_event(
         self,
         *,
         username: str,
-        event: str,
-        data: dict | None = None,
+        event: EventType,
+        data: dict[str, Any] | None = None,
     ) -> None:
         await self._message_queue.put(
             QueuedMessage(
@@ -313,7 +339,9 @@ class VizBot(commands.AutoBot):
             )
         )
 
-    def _subscriptions_for_user(self, user_id: str) -> list[eventsub.SubscriptionPayload]:
+    def _subscriptions_for_user(
+        self, user_id: str
+    ) -> list[eventsub.SubscriptionPayload]:
         return [
             eventsub.ChatMessageSubscription(
                 broadcaster_user_id=user_id,
@@ -380,7 +408,9 @@ class VizBot(commands.AutoBot):
         """
         await self.add_token(payload.access_token, payload.refresh_token)
         if not payload.user_id:
-            LOGGER.warning("OAuth authorization did not include a user_id; skipping subscriptions")
+            LOGGER.warning(
+                "OAuth authorization did not include a user_id; skipping subscriptions"
+            )
             return
 
         subs = self._subscriptions_for_user(payload.user_id)
@@ -411,12 +441,12 @@ class VizBot(commands.AutoBot):
 
     # ── Channel event handlers ────────────────────────────────────────────────
     # Each handler wraps the Twitch event in a SYSTEM-kind QueuedMessage with
-    # a typed system_event string and structured system_data dict.
+    # a typed system_event value and structured system_data dict.
 
     async def event_follow(self, payload: twitchio.ChannelFollow) -> None:
         username = self._display_name(payload.user)
         LOGGER.info("New follow from %s", username)
-        await self._enqueue_system_event(username=username, event="follow")
+        await self._enqueue_system_event(username=username, event=EventType.FOLLOW)
 
     async def event_subscription(self, payload: twitchio.ChannelSubscribe) -> None:
         if payload.gift:
@@ -425,7 +455,7 @@ class VizBot(commands.AutoBot):
         LOGGER.info("New subscription from %s (tier %s)", username, payload.tier)
         await self._enqueue_system_event(
             username=username,
-            event="sub",
+            event=EventType.SUB,
             data={"tier": payload.tier},
         )
 
@@ -436,7 +466,7 @@ class VizBot(commands.AutoBot):
         LOGGER.info("Gift sub from %s: %d subs", display, payload.total)
         await self._enqueue_system_event(
             username=display,
-            event="gift_sub",
+            event=EventType.GIFT_SUB,
             data={"total": payload.total},
         )
 
@@ -447,7 +477,7 @@ class VizBot(commands.AutoBot):
         LOGGER.info("Resub from %s (%d months)", username, payload.cumulative_months)
         await self._enqueue_system_event(
             username=username,
-            event="sub",
+            event=EventType.SUB,
             data={"tier": payload.tier, "months": payload.cumulative_months},
         )
 
@@ -456,7 +486,7 @@ class VizBot(commands.AutoBot):
         LOGGER.info("Cheer from %s: %d bits", display, payload.bits)
         await self._enqueue_system_event(
             username=display,
-            event="cheer",
+            event=EventType.CHEER,
             data={"bits": payload.bits},
         )
 
@@ -466,6 +496,6 @@ class VizBot(commands.AutoBot):
         LOGGER.info("Raid from %s with %d viewers", raider, viewers)
         await self._enqueue_system_event(
             username=raider,
-            event="raid",
+            event=EventType.RAID,
             data={"viewers": viewers},
         )

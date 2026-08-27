@@ -14,6 +14,15 @@ dependencies = [
 [project.scripts]
 twitch-vizer = "vizer:main"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The project name (twitch-vizer) differs from the importable package (vizer),
+# so hatchling needs to be told which directory to package.
+[tool.hatch.build.targets.wheel]
+packages = ["vizer"]
+
 [tool.ruff]
 line-length = 88
 
@@ -22,7 +31,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pyright]
-include           = ["vizer", "main.py"]
+include           = ["vizer", "tests", "main.py"]
 pythonVersion     = "3.12"
 typeCheckingMode  = "standard"
 venv               = ".venv"
@@ -31,5 +40,6 @@ venvPath           = "."
 [dependency-groups]
 dev = [
     "pyright>=1.1",
+    "pytest>=8",
     "ruff>=0.15",
 ]

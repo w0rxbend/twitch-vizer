@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from vizer.handler import (
     EmoteCatalog,
@@ -18,6 +21,7 @@ class EmoteCatalogTest(unittest.TestCase):
         emote = catalog.resolve("Kappa")
 
         self.assertIsNotNone(emote)
+        assert emote is not None
         self.assertEqual(emote.name, "Kappa")
         self.assertEqual(emote.url, "big.png")
 
@@ -30,6 +34,7 @@ class EmoteCatalogTest(unittest.TestCase):
         )
 
         self.assertIsNotNone(emote)
+        assert emote is not None
         self.assertEqual(
             emote.url,
             "https://static-cdn.jtvnw.net/emoticons/v2/1/static/dark/3.0",
@@ -54,7 +59,9 @@ class MessageContentResolverTest(unittest.TestCase):
         content = resolver.resolve(message)
 
         self.assertEqual(content.text, "hello")
-        self.assertEqual([part.type for part in content.parts], ["text", "image", "image"])
+        self.assertEqual(
+            [part.type for part in content.parts], ["text", "image", "image"]
+        )
         self.assertEqual([emote.name for emote in content.emotes], ["Kappa", "Wave"])
 
     def test_splits_unicode_emoji_into_image_part(self) -> None:
@@ -110,3 +117,67 @@ class VisualEventFactoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmoteCatalogFromFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def _write(self, name: str, content: str) -> Path:
+        path = self.dir / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_loads_dict_format(self) -> None:
+        path = self._write(
+            "emotes.db",
+            json.dumps({"Kappa": {"url_4x": "big.png"}}),
+        )
+
+        catalog = EmoteCatalog.from_file(str(path))
+        emote = catalog.resolve("Kappa")
+
+        self.assertIsNotNone(emote)
+        assert emote is not None
+        self.assertEqual(emote.url, "big.png")
+
+    def test_loads_list_format(self) -> None:
+        path = self._write(
+            "emotes.db",
+            json.dumps([{"name": "Wave", "url_2x": "wave.png"}, {"no_name": True}]),
+        )
+
+        catalog = EmoteCatalog.from_file(str(path))
+        emote = catalog.resolve("Wave")
+
+        self.assertIsNotNone(emote)
+        assert emote is not None
+        self.assertEqual(emote.url, "wave.png")
+
+    def test_falls_back_to_all_emotes_json(self) -> None:
+        self._write("all_emotes.json", json.dumps({"Party": "party.png"}))
+
+        catalog = EmoteCatalog.from_file(str(self.dir / "emotes.db"))
+
+        self.assertIsNotNone(catalog.resolve("Party"))
+
+    def test_missing_file_yields_empty_catalog(self) -> None:
+        catalog = EmoteCatalog.from_file(str(self.dir / "nope.db"))
+
+        self.assertIsNone(catalog.resolve("Kappa"))
+
+    def test_malformed_json_yields_empty_catalog(self) -> None:
+        path = self._write("emotes.db", "{not json")
+
+        catalog = EmoteCatalog.from_file(str(path))
+
+        self.assertIsNone(catalog.resolve("Kappa"))
+
+    def test_unexpected_top_level_type_yields_empty_catalog(self) -> None:
+        path = self._write("emotes.db", json.dumps("just a string"))
+
+        catalog = EmoteCatalog.from_file(str(path))
+
+        self.assertIsNone(catalog.resolve("Kappa"))

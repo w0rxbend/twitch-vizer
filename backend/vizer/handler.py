@@ -15,23 +15,36 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto
 from pathlib import Path
 from typing import Any
+
+from .emote_urls import animated_twitch_emote_url, plain_twitch_emote_url
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
-def _plain_twitch_emote_url(url: str) -> str:
-    """Prefer Twitch static emote images for broad OBS/browser compatibility."""
-    return url.replace("/animated/", "/static/").replace("/default/", "/static/")
+class EventType(StrEnum):
+    """Wire-level event names understood by the browser scenes.
+
+    Serializes to the same plain strings the frontend already matches on.
+    """
+
+    CHAT_MESSAGE = "chat_message"
+    FOLLOW = "follow"
+    SUB = "sub"
+    GIFT_SUB = "gift_sub"
+    CHEER = "cheer"
+    RAID = "raid"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class EmoteItem:
     """A single Twitch emote or Unicode emoji image sent to the overlay."""
+
     name: str
     url: str
     animated_url: str = ""
@@ -41,6 +54,7 @@ class EmoteItem:
 @dataclass
 class MessagePart:
     """One inline message fragment for frontend rendering."""
+
     type: str  # "text" | "image"
     text: str = ""
     name: str = ""
@@ -48,35 +62,49 @@ class MessagePart:
     animated_url: str = ""
     static_url: str = ""
 
+    @classmethod
+    def from_emote(cls, item: "EmoteItem") -> "MessagePart":
+        """Build an inline image part from a resolved emote."""
+        return cls(
+            type="image",
+            name=item.name,
+            url=item.url,
+            animated_url=item.animated_url,
+            static_url=item.static_url or item.url,
+        )
+
 
 @dataclass
 class VisualEvent:
     """Payload broadcast over WebSocket to connected browser scenes."""
-    event: str           # "chat_message" | "follow" | "sub" | "cheer" | "raid" | "gift_sub"
+
+    event: str  # one of the EventType values
     username: str
     text: str = ""
     color: str = "#4CAF50"
     seed: int = 0
     avatar_url: str | None = None
-    data: dict = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     emotes: list[EmoteItem] = field(default_factory=list)
     parts: list[MessagePart] = field(default_factory=list)
 
 
 class MessageKind(Enum):
     """Distinguishes chat messages from channel-event announcements."""
-    USER = auto()    # regular chatter message
+
+    USER = auto()  # regular chatter message
     SYSTEM = auto()  # follow/sub/raid/cheer — broadcast directly
 
 
 @dataclass
 class QueuedMessage:
     """A message waiting to be dispatched to the visual overlay."""
+
     username: str
     text: str
     kind: MessageKind = field(default=MessageKind.USER)
-    system_event: str = ""      # "follow", "sub", "cheer", "raid", "gift_sub"
-    system_data: dict = field(default_factory=dict)
+    system_event: str = ""  # one of the EventType values
+    system_data: dict[str, Any] = field(default_factory=dict)
     avatar_url: str | None = None
     emote_names: list[str] = field(default_factory=list)
     parts: list[MessagePart] = field(default_factory=list)
@@ -112,11 +140,7 @@ def _emoji_url(char: str) -> str:
 
 def _is_emoji_base(char: str) -> bool:
     cp = ord(char)
-    return (
-        0x1F000 <= cp <= 0x1FAFF
-        or 0x2600 <= cp <= 0x27BF
-        or 0x2300 <= cp <= 0x23FF
-    )
+    return 0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
 
 
 def _is_emoji_modifier(char: str) -> bool:
@@ -135,7 +159,7 @@ def _emoji_cluster_at(text: str, start: int) -> tuple[str, int] | None:
         if maybe_end < len(text) and ord(text[maybe_end]) == 0xFE0F:
             maybe_end += 1
         if maybe_end < len(text) and ord(text[maybe_end]) == 0x20E3:
-            return text[start:maybe_end + 1], maybe_end + 1
+            return text[start : maybe_end + 1], maybe_end + 1
         return None
 
     if not _is_emoji_base(first):
@@ -195,10 +219,13 @@ def _split_text_emojis(text: str) -> tuple[str, list[MessagePart], list[EmoteIte
 
 # ── Visual event collaborators ────────────────────────────────────────────────
 
+
 class EmoteCatalog:
     """Resolves emote names to image URLs from a local cache and message hints."""
 
-    def __init__(self, emotes: Mapping[str, dict[str, Any] | str] | None = None) -> None:
+    def __init__(
+        self, emotes: Mapping[str, dict[str, Any] | str] | None = None
+    ) -> None:
         self._emotes = dict(emotes or {})
 
     @classmethod
@@ -249,7 +276,7 @@ class EmoteCatalog:
     def resolve(self, name: str, url: str = "") -> EmoteItem | None:
         record = self._emotes.get(name)
         if isinstance(record, str) and record:
-            static_url = _plain_twitch_emote_url(record)
+            static_url = plain_twitch_emote_url(record)
             return EmoteItem(name=name, url=static_url, static_url=static_url)
         if isinstance(record, dict):
             resolved = self._best_url(record)
@@ -262,8 +289,8 @@ class EmoteCatalog:
                     static_url=resolved,
                 )
         if url:
-            static_url = _plain_twitch_emote_url(url)
-            animated_url = url.replace("/static/", "/animated/")
+            static_url = plain_twitch_emote_url(url)
+            animated_url = animated_twitch_emote_url(url)
             return EmoteItem(
                 name=name,
                 url=static_url,
@@ -280,14 +307,14 @@ class EmoteCatalog:
             or record.get("url_1x")
             or record.get("url")
         )
-        return _plain_twitch_emote_url(resolved) if isinstance(resolved, str) else ""
+        return plain_twitch_emote_url(resolved) if isinstance(resolved, str) else ""
 
     def _animated_url(self, record: Mapping[str, Any]) -> str:
         resolved = record.get("animated_url") or record.get("url_animated")
         if isinstance(resolved, str):
             return resolved
         static = self._best_url(record)
-        animated = static.replace("/static/", "/animated/")
+        animated = animated_twitch_emote_url(static)
         return animated if animated != static else ""
 
 
@@ -324,15 +351,7 @@ class MessageContentResolver:
             if part.type == "image":
                 item = self._emote_catalog.resolve(part.name or part.text, part.url)
                 if item:
-                    parts.append(
-                        MessagePart(
-                            type="image",
-                            name=item.name,
-                            url=item.url,
-                            animated_url=item.animated_url,
-                            static_url=item.static_url or item.url,
-                        )
-                    )
+                    parts.append(MessagePart.from_emote(item))
                     emotes.append(item)
                 continue
 
@@ -346,15 +365,7 @@ class MessageContentResolver:
                 continue
             item = self._emote_catalog.resolve(name)
             if item:
-                parts.append(
-                    MessagePart(
-                        type="image",
-                        name=item.name,
-                        url=item.url,
-                        animated_url=item.animated_url,
-                        static_url=item.static_url or item.url,
-                    )
-                )
+                parts.append(MessagePart.from_emote(item))
                 emotes.append(item)
 
         clean_text = " ".join(segment for segment in clean_segments if segment).strip()
@@ -383,7 +394,7 @@ class VisualEventFactory:
         content = self._content_resolver.resolve(message)
         identity = self._identity.for_username(message.username)
         return VisualEvent(
-            event="chat_message",
+            event=EventType.CHAT_MESSAGE,
             username=message.username,
             text=content.text,
             color=identity.color,
@@ -395,6 +406,7 @@ class VisualEventFactory:
 
 
 # ── MessageHandler ────────────────────────────────────────────────────────────
+
 
 class MessageHandler:
     """Dispatches queued messages as VisualEvents to connected WebSocket clients."""
@@ -435,7 +447,11 @@ class MessageHandler:
         while True:
             msg: QueuedMessage = await self._message_queue.get()
             try:
-                LOGGER.debug("Processing queued message from %s (%s)", msg.username, msg.kind.name)
+                LOGGER.debug(
+                    "Processing queued message from %s (%s)",
+                    msg.username,
+                    msg.kind.name,
+                )
                 await self.handle(msg)
             except Exception:
                 LOGGER.exception("Error processing message from %s", msg.username)

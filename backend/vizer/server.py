@@ -60,9 +60,7 @@ class VizServer:
             return RedirectResponse(url="/scenes/", status_code=301)
 
         async def scenes_index(request: Request) -> Response:
-            page = (_SCENES_DIR / "index.html").resolve()
-            if not page.is_relative_to(_SCENES_DIR.resolve()):
-                return Response("Not found", status_code=404)
+            page = _SCENES_DIR / "index.html"
             if not page.exists():
                 return Response("Scenes index not found", status_code=404)
             return FileResponse(page, headers={"Cache-Control": "no-store"})
@@ -87,18 +85,21 @@ class VizServer:
             """
             await websocket.accept()
             self._clients.add(websocket)
-            LOGGER.info("WebSocket client connected — %d client(s) active", len(self._clients))
+            LOGGER.info(
+                "WebSocket client connected — %d client(s) active", len(self._clients)
+            )
             try:
                 # Keep the connection alive; ignore any client-sent data
                 while True:
                     await websocket.receive_text()
             except WebSocketDisconnect:
-                LOGGER.info(
-                    "WebSocket client disconnected — %d client(s) remaining",
-                    len(self._clients) - 1,
-                )
+                pass
             finally:
                 self._clients.discard(websocket)
+                LOGGER.info(
+                    "WebSocket client disconnected — %d client(s) remaining",
+                    len(self._clients),
+                )
 
         routes = [
             Route("/", index),

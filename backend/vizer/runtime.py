@@ -7,6 +7,7 @@ creates objects and connects them.
 
 import asyncio
 import logging
+from pathlib import Path
 
 from twitchio import eventsub
 
@@ -45,14 +46,17 @@ async def run(settings: Settings | None = None) -> None:
         subs=subs,
         message_queue=message_queue,
         credentials=settings.twitch,
+        token_file=settings.token_file,
     ) as bot:
         await bot.add_token(
             settings.twitch.access_token,
             settings.twitch.refresh_token,
         )
 
+        # Tokens persisted from a previous run are loaded after the .env token
+        # above, so refreshed tokens win over a possibly stale TWITCH_*_TOKEN.
         await asyncio.gather(
-            bot.start(load_tokens=False),
+            bot.start(load_tokens=Path(settings.token_file).exists()),
             server.serve(),
             handler.process_queue(),
         )

@@ -40,6 +40,7 @@ class Settings:
     bot_username: str
     server: ServerSettings
     emotes_db_path: str
+    token_file: str
     log_level: str
 
 
@@ -77,14 +78,19 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             access_token=_require(environ, "TWITCH_ACCESS_TOKEN"),
             refresh_token=_require(environ, "TWITCH_REFRESH_TOKEN"),
         ),
-        bot_username=environ.get("TWITCH_BOT_USERNAME", "worxbend"),
+        bot_username=_require(environ, "TWITCH_BOT_USERNAME"),
         server=ServerSettings(
-            host=environ.get("VIZER_SERVER_HOST", "0.0.0.0"),
+            # Localhost-only by default: the overlay endpoints have no auth.
+            # Deployments that need LAN access set VIZER_SERVER_HOST=0.0.0.0.
+            host=environ.get("VIZER_SERVER_HOST", "127.0.0.1"),
             port=_read_port(environ),
         ),
         emotes_db_path=environ.get(
             "VIZER_EMOTES_DB_PATH",
             str(_DEFAULT_EMOTES_DB_PATH),
         ),
+        # Where twitchio persists refreshed OAuth tokens; containers point this
+        # at a mounted volume so refreshed tokens survive redeploys.
+        token_file=environ.get("VIZER_TOKEN_FILE", ".tio.tokens.json"),
         log_level=environ.get("VIZER_LOG_LEVEL", "INFO").upper(),
     )

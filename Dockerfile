@@ -19,6 +19,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
+# Persist refreshed twitchio OAuth tokens on the mounted /data volume so they
+# survive container redeploys.
+ENV VIZER_TOKEN_FILE=/data/.tio.tokens.json
+
 WORKDIR /app
 
 COPY backend/pyproject.toml backend/uv.lock ./

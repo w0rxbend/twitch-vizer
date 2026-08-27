@@ -16,8 +16,8 @@ import colorlog
 def setup_logging(log_level: str = "INFO") -> None:
     """Configure coloured logging with timestamp and module names.
 
-    Called once at startup in vizer/__init__.py before any other component
-    initialises so all subsequent log output is consistently formatted.
+    Called once from runtime.run() right after settings are loaded, so all
+    subsequent log output is consistently formatted.
     """
     level = getattr(logging, log_level.upper(), logging.INFO)
 
@@ -26,16 +26,16 @@ def setup_logging(log_level: str = "INFO") -> None:
         "%(cyan)s%(name)-30s%(reset)s %(message)s",
         datefmt="%H:%M:%S",
         log_colors={
-            "DEBUG":    "cyan",
-            "INFO":     "green",
-            "WARNING":  "yellow",
-            "ERROR":    "red",
+            "DEBUG": "cyan",
+            "INFO": "green",
+            "WARNING": "yellow",
+            "ERROR": "red",
             "CRITICAL": "bold_red",
         },
         secondary_log_colors={
             "message": {
-                "WARNING":  "yellow",
-                "ERROR":    "red",
+                "WARNING": "yellow",
+                "ERROR": "red",
                 "CRITICAL": "bold_red",
             },
         },

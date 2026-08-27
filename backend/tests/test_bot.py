@@ -44,7 +44,9 @@ class BotFragmentParsingTest(unittest.TestCase):
         self.assertIn("/static/dark/3.0", parts[0].url)
 
     def test_falls_back_to_payload_text_without_fragments(self) -> None:
-        text, emotes, parts = _message_parts_from_fragments([], fallback_text="plain chat")
+        text, emotes, parts = _message_parts_from_fragments(
+            [], fallback_text="plain chat"
+        )
 
         self.assertEqual(text, "plain chat")
         self.assertEqual(emotes, [])
