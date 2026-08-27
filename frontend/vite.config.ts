@@ -1,8 +1,19 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import { existsSync, readdirSync } from 'fs';
+
+const scenesDir = resolve(__dirname, 'src/scenes');
+
+// Each src/scenes/<name>/index.html becomes a build entry automatically,
+// so adding a scene directory is enough — no config edit required.
+const sceneInputs = Object.fromEntries(
+  readdirSync(scenesDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(resolve(scenesDir, entry.name, 'index.html')))
+    .map((entry) => [entry.name, resolve(scenesDir, entry.name, 'index.html')]),
+);
 
 export default defineConfig(({ command }) => ({
-  root: resolve(__dirname, 'src/scenes'),
+  root: scenesDir,
   base: command === 'serve' ? '/' : './',
   server: {
     open: '/hacker-chat/',
@@ -18,18 +29,8 @@ export default defineConfig(({ command }) => ({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        index: resolve(__dirname, 'src/scenes/index.html'),
-        chat: resolve(__dirname, 'src/scenes/chat/index.html'),
-        emojiChat: resolve(__dirname, 'src/scenes/emoji-chat/index.html'),
-        fluidChat: resolve(__dirname, 'src/scenes/fluid-chat/index.html'),
-        glitchOverlay: resolve(__dirname, 'src/scenes/glitch-overlay/index.html'),
-        hackerChat: resolve(__dirname, 'src/scenes/hacker-chat/index.html'),
-        grunge: resolve(__dirname, 'src/scenes/grunge/index.html'),
-        mrRobot: resolve(__dirname, 'src/scenes/mr-robot/index.html'),
-        pixelChat: resolve(__dirname, 'src/scenes/pixel-chat/index.html'),
-        razerPixelChat: resolve(__dirname, 'src/scenes/razer-pixel-chat/index.html'),
-        siliconValley: resolve(__dirname, 'src/scenes/silicon-valley/index.html'),
-        statusLine: resolve(__dirname, 'src/scenes/status-line/index.html'),
+        index: resolve(scenesDir, 'index.html'),
+        ...sceneInputs,
       },
     },
   },

@@ -16,7 +16,7 @@ export function plainImageUrl(rawUrl: string): string {
       return url.toString();
     }
   } catch {
-    return rawUrl.replace('/animated/', '/static/').replace('/default/', '/static/');
+    // Not an absolute URL; fall through to the plain string rewrite.
   }
   return rawUrl.replace('/animated/', '/static/').replace('/default/', '/static/');
 }

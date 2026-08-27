@@ -15,10 +15,14 @@ export type VisualEventName =
 export interface EmoteItem {
   name: string;
   url: string;
-  animated_url?: string;
+  /** Canonical animated-image URL, resolved by normalizeEventMsg. */
   animatedUrl?: string;
-  static_url?: string;
+  /** Canonical static-image URL, resolved by normalizeEventMsg. */
   staticUrl?: string;
+  /** @deprecated wire-format alias; use animatedUrl. */
+  animated_url?: string;
+  /** @deprecated wire-format alias; use staticUrl. */
+  static_url?: string;
 }
 
 export interface MessagePart {
@@ -26,10 +30,14 @@ export interface MessagePart {
   text?: string;
   name?: string;
   url?: string;
-  animated_url?: string;
+  /** Canonical animated-image URL, resolved by normalizeEventMsg. */
   animatedUrl?: string;
-  static_url?: string;
+  /** Canonical static-image URL, resolved by normalizeEventMsg. */
   staticUrl?: string;
+  /** @deprecated wire-format alias; use animatedUrl. */
+  animated_url?: string;
+  /** @deprecated wire-format alias; use staticUrl. */
+  static_url?: string;
 }
 
 export interface VisualEventMsg {
@@ -38,12 +46,10 @@ export interface VisualEventMsg {
   text?: string;
   color?: string;
   seed?: number;
-  avatar_url?: string | null;
+  /** Canonical avatar URL, resolved by normalizeEventMsg from all wire aliases. */
   avatarUrl?: string | null;
-  profile_image_url?: string | null;
-  profileImageUrl?: string | null;
-  profile_image?: string | null;
-  profileImage?: string | null;
+  /** @deprecated wire-format alias; use avatarUrl. */
+  avatar_url?: string | null;
   emotes?: EmoteItem[];
   parts?: MessagePart[];
   data?: {
@@ -55,6 +61,47 @@ export interface VisualEventMsg {
   };
 }
 
+/**
+ * Raw wire message as the backend may send it. The backend emits snake_case,
+ * but older payloads and hand-written test events may use camelCase or one of
+ * several avatar aliases, so parsing stays tolerant here — and only here.
+ */
+interface RawEventMsg extends VisualEventMsg {
+  profile_image_url?: string | null;
+  profileImageUrl?: string | null;
+  profile_image?: string | null;
+  profileImage?: string | null;
+}
+
+function normalizePart<T extends EmoteItem | MessagePart>(part: T): T {
+  return {
+    ...part,
+    animatedUrl: part.animated_url ?? part.animatedUrl,
+    staticUrl: part.static_url ?? part.staticUrl,
+  };
+}
+
+/**
+ * Collapses every wire-format alias into the canonical camelCase fields
+ * (avatarUrl, animatedUrl, staticUrl). OverlayEventSocket applies this to
+ * every incoming message, so scenes never need to coalesce aliases.
+ */
+export function normalizeEventMsg(raw: RawEventMsg): VisualEventMsg {
+  return {
+    ...raw,
+    avatarUrl:
+      raw.avatar_url
+      ?? raw.avatarUrl
+      ?? raw.profile_image_url
+      ?? raw.profileImageUrl
+      ?? raw.profile_image
+      ?? raw.profileImage
+      ?? null,
+    emotes: raw.emotes?.map(normalizePart),
+    parts: raw.parts?.map(normalizePart),
+  };
+}
+
 interface OverlayEventSocketOptions {
   label: string;
   onEvent: (msg: VisualEventMsg) => void;
@@ -62,11 +109,14 @@ interface OverlayEventSocketOptions {
   url?: string;
 }
 
+const MAX_RETRY_DELAY_MS = 30_000;
+
 export class OverlayEventSocket {
   private readonly retryDelayMs: number;
   private readonly url?: string;
   private ws: WebSocket | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempts = 0;
   private closedByClient = false;
 
   constructor(private readonly options: OverlayEventSocketOptions) {
@@ -86,7 +136,10 @@ export class OverlayEventSocket {
       const wsUrl = this.url ?? getWebSocketUrl();
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
-      ws.onopen = () => console.log(`[${this.options.label}] WebSocket connected:`, wsUrl);
+      ws.onopen = () => {
+        this.retryAttempts = 0;
+        console.log(`[${this.options.label}] WebSocket connected:`, wsUrl);
+      };
       ws.onmessage = (evt: MessageEvent<string>) => this.handleMessage(evt);
       ws.onclose = () => this.handleClose(ws);
       ws.onerror = () => ws.close();
@@ -105,7 +158,7 @@ export class OverlayEventSocket {
 
   private handleMessage(evt: MessageEvent<string>): void {
     try {
-      this.options.onEvent(JSON.parse(evt.data) as VisualEventMsg);
+      this.options.onEvent(normalizeEventMsg(JSON.parse(evt.data) as RawEventMsg));
     } catch (error) {
       console.warn(`[${this.options.label}] WebSocket parse error:`, error);
     }
@@ -119,7 +172,12 @@ export class OverlayEventSocket {
 
   private scheduleReconnect(): void {
     this.clearRetryTimer();
-    this.retryTimer = setTimeout(() => this.connect(), this.retryDelayMs);
+    // Capped exponential backoff with jitter, so many browser sources left
+    // running against a downed backend do not all retry in sync.
+    const base = Math.min(MAX_RETRY_DELAY_MS, this.retryDelayMs * 2 ** this.retryAttempts);
+    const delay = base * (0.5 + Math.random() / 2);
+    this.retryAttempts++;
+    this.retryTimer = setTimeout(() => this.connect(), delay);
   }
 
   private clearRetryTimer(): void {
@@ -127,6 +185,39 @@ export class OverlayEventSocket {
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
   }
+}
+
+/**
+ * Overlay classes bootstrapped by bootstrapOverlay: async setup, then a
+ * WebSocket connection to the backend event stream.
+ */
+export interface BootstrappableOverlay {
+  init(): Promise<void>;
+  connectWebSocket(): void;
+}
+
+/**
+ * Standard scene startup: init the overlay, connect its socket, wire the
+ * spacebar test trigger, and log (rather than silently swallow) init failures.
+ */
+export function bootstrapOverlay(
+  overlay: BootstrappableOverlay,
+  options: { label?: string; onTestKey?: () => void } = {},
+): void {
+  const label = options.label ?? 'Overlay';
+  overlay
+    .init()
+    .then(() => {
+      overlay.connectWebSocket();
+      if (options.onTestKey) {
+        window.addEventListener('keydown', (e: KeyboardEvent) => {
+          if (e.key === ' ') options.onTestKey!();
+        });
+      }
+    })
+    .catch((error: unknown) => {
+      console.error(`[${label}] Failed to initialize overlay:`, error);
+    });
 }
 
 export function seedRng(seed: number): () => number {
@@ -152,9 +243,20 @@ export function clamp(value: number, min: number, max: number): number {
 
 export function colorFromString(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
-  const normalized = value.startsWith('#') ? value.slice(1) : value;
-  const parsed = Number.parseInt(normalized, 16);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  let hex = value.startsWith('#') ? value.slice(1) : value;
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    hex = hex.replace(/./g, (ch) => ch + ch);
+  }
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return fallback;
+  return Number.parseInt(hex, 16);
+}
+
+/** Relative luminance (WCAG coefficients) of a packed 0xRRGGBB color, 0..1. */
+export function luminance(color: number): number {
+  const r = ((color >> 16) & 0xff) / 255;
+  const g = ((color >> 8) & 0xff) / 255;
+  const b = (color & 0xff) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 export function hslToRgb(h: number, s: number, l: number): number {
@@ -195,9 +297,13 @@ export function mixColor(a: number, b: number, t: number): number {
   );
 }
 
-export function rgba(color: number, alpha: number): { color: number; alpha: number } {
+/** Builds a PIXI fill-style object from a packed 0xRRGGBB color and alpha. */
+export function fillStyle(color: number, alpha: number): { color: number; alpha: number } {
   return { color, alpha };
 }
+
+/** @deprecated misleading name — use fillStyle. */
+export const rgba = fillStyle;
 
 function defaultWebSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -229,16 +335,9 @@ export function getWebSocketUrl(): string {
   );
 }
 
+/** @deprecated messages from OverlayEventSocket are normalized; read msg.avatarUrl. */
 export function messageAvatarUrl(msg: VisualEventMsg): string | null {
-  return (
-    msg.avatar_url
-    ?? msg.avatarUrl
-    ?? msg.profile_image_url
-    ?? msg.profileImageUrl
-    ?? msg.profile_image
-    ?? msg.profileImage
-    ?? null
-  );
+  return msg.avatarUrl ?? msg.avatar_url ?? null;
 }
 
 export function formatEventText(msg: VisualEventMsg, followText: string): string {
@@ -265,6 +364,19 @@ export function formatEventLabel(
   return event === 'chat_message' ? chatLabel : event.replace('_', separator).toUpperCase();
 }
 
+/** Converts an emote list entry into an image MessagePart, keeping every URL variant. */
+export function emoteToPart(emote: EmoteItem): MessagePart {
+  return {
+    type: 'image',
+    name: emote.name,
+    url: emote.url,
+    animatedUrl: emote.animatedUrl,
+    staticUrl: emote.staticUrl,
+    animated_url: emote.animated_url,
+    static_url: emote.static_url,
+  };
+}
+
 export function renderParts(
   msg: VisualEventMsg,
   fallbackText = formatEventText(msg, 'joined the stream'),
@@ -274,17 +386,15 @@ export function renderParts(
 
   const fallback: MessagePart[] = [{ type: 'text', text: fallbackText }];
   for (const emote of msg.emotes ?? []) {
-    if (emote.url) {
-      fallback.push({
-        type: 'image',
-        name: emote.name,
-        url: emote.url,
-        animated_url: emote.animated_url,
-        animatedUrl: emote.animatedUrl,
-        static_url: emote.static_url,
-        staticUrl: emote.staticUrl,
-      });
-    }
+    if (emote.url) fallback.push(emoteToPart(emote));
   }
   return fallback;
+}
+
+/** Flattens parts to plain text; image parts render as :name: placeholders. */
+export function flattenPartsToText(parts: MessagePart[]): string {
+  return parts
+    .map((part) => (part.type === 'image' ? `:${part.name ?? 'emote'}:` : part.text ?? ''))
+    .join('')
+    .trim();
 }
