@@ -14,7 +14,6 @@ follows, subscriptions, cheers, raids, and gift subscriptions.
 - Chat message payloads with text fragments, Twitch emote URLs, Unicode emoji
   image parts, user avatars, stable per-user colors, and deterministic seeds.
 - System event overlays for follows, subs, resubs, gift subs, cheers, and raids.
-- Ukrainian randomized announcement strings for channel events.
 - Optional local emote cache from `backend/emotes/emotes.db` or
   `backend/emotes/all_emotes.json`.
 - Docker image that builds frontend scenes and serves them from the backend.
@@ -42,21 +41,27 @@ TWITCH_CLIENT_ID=
 TWITCH_CLIENT_SECRET=
 TWITCH_ACCESS_TOKEN=
 TWITCH_REFRESH_TOKEN=
+TWITCH_BOT_USERNAME=
 ```
 
 Optional values:
 
 ```dotenv
-TWITCH_BOT_USERNAME=worxbend
-VIZER_SERVER_HOST=0.0.0.0
+VIZER_SERVER_HOST=127.0.0.1
 VIZER_SERVER_PORT=8080
 VIZER_LOG_LEVEL=INFO
+VIZER_TOKEN_FILE=.tio.tokens.json
 ```
 
-The Twitch bot username is resolved to a Twitch user ID at startup. The default
-server port is `8080`. `VIZER_EMOTES_DB_PATH` can also be set when you need a
-non-default emote cache location; otherwise the backend uses
-`backend/emotes/emotes.db` in local development.
+The Twitch bot username is resolved to a Twitch user ID at startup. The server
+binds to `127.0.0.1:8080` by default; the overlay endpoints have no
+authentication, so set `VIZER_SERVER_HOST=0.0.0.0` only when the server should
+be reachable from other machines (the Docker setup does this explicitly).
+`VIZER_TOKEN_FILE` controls where twitchio persists refreshed OAuth tokens; the
+Docker image points it at `/data/.tio.tokens.json` so tokens survive
+redeploys via the mounted `./data` volume. `VIZER_EMOTES_DB_PATH` can also be
+set when you need a non-default emote cache location; otherwise the backend
+uses `backend/emotes/emotes.db` in local development.
 
 ## Local Development
 
@@ -118,15 +123,31 @@ path and any built scene names available under `vizer/static/scenes`.
 
 ## Docker
 
-Build and run with Compose:
+Run the published image with one command (reads `.env` via `env_file`):
 
 ```bash
-cp .env.example .env
-docker compose up --build
+cp .env.example .env   # first time only; fill in the Twitch credentials
+docker compose up -d
+```
+
+To build the image from local sources instead of pulling it, add the build
+override file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 The Compose service publishes `8080:8080`, reads `.env`, and mounts `./data` to
-`/data` for runtime persistence.
+`/data` for runtime persistence. The base `docker-compose.yml` stays pull-only
+because CI copies it to the deploy server, where no source tree exists to build
+from; `docker-compose.build.yml` adds the local `build:` section on top of it.
+
+The published image is multi-architecture: CI builds and pushes both
+`linux/amd64` and `linux/arm64`, so `docker compose up -d` pulls the right
+variant automatically on either architecture. For a local cross-build, set
+`DOCKER_PLATFORM` (for example `DOCKER_PLATFORM=linux/arm64`) before running
+the build command above; cross-building on a non-arm host requires binfmt/QEMU
+(`docker run --privileged --rm tonistiigi/binfmt --install arm64`).
 
 ## Project Layout
 
@@ -136,7 +157,7 @@ backend/vizer/runtime.py      composition root
 backend/vizer/bot.py          TwitchIO adapter and EventSub event mapping
 backend/vizer/handler.py      visual event factory, emote resolution, queue processing
 backend/vizer/server.py       Starlette HTTP and WebSocket server
-backend/vizer/events.py       randomized Ukrainian system-event text
+backend/vizer/emote_urls.py   shared Twitch emote CDN URL helpers
 backend/tests/                backend unit tests
 frontend/src/shared/          shared browser overlay utilities
 frontend/src/scenes/          OBS browser-source scene pages
@@ -150,7 +171,7 @@ Backend tests:
 
 ```bash
 cd backend
-uv run python -m unittest discover -s tests
+uv run pytest
 ```
 
 Backend lint/type checks:

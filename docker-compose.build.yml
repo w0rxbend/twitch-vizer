@@ -1,0 +1,19 @@
+# Override that builds the image from local sources instead of pulling it.
+#
+# Usage (from the repo root, after `cp .env.example .env` and filling it in):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The base docker-compose.yml stays pull-only because CI copies it to the
+# deploy server, where the source tree does not exist to build from.
+services:
+  vizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Target platform for the image. Defaults to the machine you build on;
+      # set DOCKER_PLATFORM=linux/arm64 in the environment (or .env) to
+      # cross-build for arm64 (requires binfmt/QEMU on non-arm hosts, e.g.
+      # `docker run --privileged --rm tonistiigi/binfmt --install arm64`).
+      platforms:
+        - ${DOCKER_PLATFORM:-linux/amd64}
