@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
-import { OverlayEventSocket, clamp } from '../../shared/overlay';
+import { bootstrapOverlay, clamp, OverlayEventSocket } from '../../shared/overlay';
+import { buildVignette, createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 // Cold industrial — no warmth, no sepia.
@@ -72,23 +73,12 @@ class GrungeOverlay {
   });
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
-      antialias: false,
-      resolution: Math.min(devicePixelRatio, 2),
-      autoDensity: true,
-    });
-
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset    = '0';
+    const app = await createOverlayApp({ antialias: false });
     this.app = app;
 
     const { width: w, height: h } = app.screen;
 
-    app.stage.addChild(this.buildVignette(w, h));
+    app.stage.addChild(buildVignette(w, h, { steps: 24, strength: 0.34 }));
     app.stage.addChild(this.staticGfx);
     app.stage.addChild(this.grainGfx);
     app.stage.addChild(this.dustGfx);
@@ -151,21 +141,6 @@ class GrungeOverlay {
   }
 
   // ── Static layer builder ─────────────────────────────────────────────────────
-
-  private buildVignette(w: number, h: number): PIXI.Graphics {
-    const g   = new PIXI.Graphics();
-    const dim = Math.min(w, h);
-    for (let i = 0; i < 24; i++) {
-      const t     = i / 24;
-      const alpha = Math.pow(1 - t, 2) * 0.34;
-      const inset = t * 0.34 * dim;
-      g.rect(0,         0,         w,     inset).fill({ color: BLACK, alpha });
-      g.rect(0,         h - inset, w,     inset).fill({ color: BLACK, alpha });
-      g.rect(0,         0,         inset, h    ).fill({ color: BLACK, alpha });
-      g.rect(w - inset, 0,         inset, h    ).fill({ color: BLACK, alpha });
-    }
-    return g;
-  }
 
   private initDebris(w: number, h: number): void {
     for (let i = 0; i < 28; i++) {
@@ -330,9 +305,4 @@ class GrungeOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new GrungeOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === ' ') overlay.trigger();
-  });
-});
+bootstrapOverlay(overlay, { label: 'GrungeOverlay', onTestKey: () => overlay.trigger() });

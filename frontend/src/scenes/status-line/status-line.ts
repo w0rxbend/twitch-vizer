@@ -2,18 +2,22 @@ import * as PIXI from 'pixi.js';
 
 import { animatedImageUrl, fitDisplayObject, loadEmoteDisplay, staticImageUrl } from '../../shared/emote-images';
 import {
+  bootstrapOverlay,
   clamp,
   colorFromString,
+  emoteToPart,
+  fillStyle,
   formatEventLabel,
   formatEventText,
   hashSeed,
   hslToRgb,
   mixColor,
   OverlayEventSocket,
-  rgba,
+  renderParts,
   seedRng,
 } from '../../shared/overlay';
 import type { MessagePart, VisualEventMsg } from '../../shared/overlay';
+import { createOverlayApp } from '../../shared/pixi';
 
 interface StatusConfig {
   height: number;
@@ -37,6 +41,10 @@ interface TickerItem {
 }
 
 const DEFAULT_HEIGHT = 108;
+// Ticker text sits this far above the bottom edge: a fraction of the bar
+// height, but never closer than the minimum inset.
+const TICKER_MIN_INSET = 32;
+const TICKER_BASELINE_RATIO = 0.42;
 const TAU = Math.PI * 2;
 const RAZER_GREEN = 0x54f044;
 const TOXIC_GREEN = 0x38ff24;
@@ -71,29 +79,9 @@ function ease(current: number, target: number, rate: number, delta: number): num
   return current + (target - current) * (1 - Math.exp(-rate * delta / 60));
 }
 
-function messageText(msg: VisualEventMsg): string {
-  const partsText = msg.parts
-    ?.map((part) => (part.type === 'text' ? part.text : part.name ? `:${part.name}:` : ''))
-    .join('')
-    .trim();
-  const text = partsText || formatEventText(msg, 'joined the stream');
-  if (msg.event === 'chat_message') {
-    const content = text.trim() || '...';
-    return `${msg.username}: ${content}`;
-  }
+function eventTickerText(msg: VisualEventMsg): string {
   const label = formatEventLabel(msg.event, { separator: ' ' });
-  return `${label} | ${msg.username} ${text}`.trim();
-}
-
-function messageParts(msg: VisualEventMsg): MessagePart[] {
-  const incoming = msg.parts?.filter((part) => part.type === 'text' || part.type === 'image') ?? [];
-  if (incoming.length > 0) return incoming;
-
-  const fallback: MessagePart[] = [{ type: 'text', text: formatEventText(msg, 'joined the stream') }];
-  for (const emote of msg.emotes ?? []) {
-    if (emote.url) fallback.push({ type: 'image', name: emote.name, url: emote.url });
-  }
-  return fallback;
+  return `${label} | ${msg.username} ${formatEventText(msg, 'joined the stream')}`.trim();
 }
 
 function readableAccent(msg: VisualEventMsg): number {
@@ -136,7 +124,7 @@ function appendTickerImage(container: PIXI.Container, part: MessagePart, x: numb
   const size = 34;
   const frame = new PIXI.Graphics()
     .roundRect(x, -3, size, size, 5)
-    .fill(rgba(DEEP_GREEN, 0.72))
+    .fill(fillStyle(DEEP_GREEN, 0.72))
     .stroke({ color: ACID_GREEN, alpha: 0.65, width: 2 });
   container.addChild(frame);
 
@@ -156,7 +144,7 @@ function appendTickerImage(container: PIXI.Container, part: MessagePart, x: numb
       .catch(() => {
         frame.clear()
           .roundRect(x, -3, size, size, 5)
-          .fill(rgba(DEEP_GREEN, 0.86))
+          .fill(fillStyle(DEEP_GREEN, 0.86))
           .stroke({ color: TOXIC_GREEN, alpha: 0.72, width: 2 });
       });
   }
@@ -175,7 +163,7 @@ function makeTickerItem(msg: VisualEventMsg): PIXI.Container {
 
   if (msg.event === 'chat_message') {
     cursor = appendTickerText(container, `${msg.username}: `, cursor);
-    for (const part of messageParts(msg)) {
+    for (const part of renderParts(msg)) {
       if (part.type === 'image') {
         cursor = appendTickerImage(container, part, cursor);
       } else {
@@ -185,20 +173,10 @@ function makeTickerItem(msg: VisualEventMsg): PIXI.Container {
     return container;
   }
 
-  cursor = appendTickerText(container, messageText(msg), cursor);
+  cursor = appendTickerText(container, eventTickerText(msg), cursor);
   for (const emote of msg.emotes ?? []) {
     if (emote.url) {
-      cursor = appendTickerImage(
-        container,
-        {
-          type: 'image',
-          name: emote.name,
-          url: emote.url,
-          animated_url: emote.animated_url ?? emote.animatedUrl,
-          static_url: emote.static_url ?? emote.staticUrl,
-        },
-        cursor,
-      );
+      cursor = appendTickerImage(container, emoteToPart(emote), cursor);
     }
   }
   return container;
@@ -230,18 +208,13 @@ class StatusLineOverlay {
   private debugText: PIXI.Text | null = null;
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
+    const app = await createOverlayApp({
       antialias: false,
       resolution: 1,
+      autoDensity: false,
       roundPixels: true,
     });
 
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset = '0';
     app.canvas.style.width = '100%';
     app.canvas.style.height = '100%';
     app.canvas.style.imageRendering = 'pixelated';
@@ -333,11 +306,15 @@ class StatusLineOverlay {
     this.layoutTextItems();
   }
 
+  private tickerBaselineY(): number {
+    if (!this.app) return 0;
+    return this.app.screen.height - Math.max(TICKER_MIN_INSET, this.config.height * TICKER_BASELINE_RATIO);
+  }
+
   private addTickerItem(msg: VisualEventMsg, seed: number, speed: number): void {
     if (!this.app) return;
     const view = makeTickerItem(msg);
-    const height = this.config.height;
-    const y = this.app.screen.height - Math.max(32, height * 0.42);
+    const y = this.tickerBaselineY();
     const rightmost = this.tickerItems.reduce(
       (max, item) => Math.max(max, item.view.x + item.view.width),
       this.app.screen.width,
@@ -352,8 +329,7 @@ class StatusLineOverlay {
 
   private layoutTextItems(): void {
     if (!this.app) return;
-    const height = this.config.height;
-    const y = this.app.screen.height - Math.max(32, height * 0.42);
+    const y = this.tickerBaselineY();
     for (const item of this.tickerItems) {
       item.view.y = Math.round(y);
     }
@@ -368,7 +344,7 @@ class StatusLineOverlay {
     for (let i = this.tickerItems.length - 1; i >= 0; i--) {
       const item = this.tickerItems[i];
       const bob = Math.sin(this.elapsed * 0.075 + item.seed) * 1.2 * this.level;
-      item.view.y = Math.round(this.app.screen.height - Math.max(32, this.config.height * 0.42) + bob);
+      item.view.y = Math.round(this.tickerBaselineY() + bob);
       item.view.x -= item.speed * delta;
 
       if (item.view.x < -item.view.width - 48) {
@@ -398,7 +374,7 @@ class StatusLineOverlay {
     if (active > 0.015) {
       this.glow
         .rect(0, crest - 8, width, 7 + active * 8)
-        .fill(rgba(bright, 0.24 + active * 0.30));
+        .fill(fillStyle(bright, 0.24 + active * 0.30));
     }
 
     this.wave.clear();
@@ -447,7 +423,7 @@ class StatusLineOverlay {
       }
       this.wave.lineTo(width, height + 4);
       this.wave.closePath();
-      this.wave.fill(rgba(layer.color, active > 0.02 ? layer.alpha : active));
+      this.wave.fill(fillStyle(layer.color, active > 0.02 ? layer.alpha : active));
     }
 
     this.wave.moveTo(0, height + 4);
@@ -463,11 +439,11 @@ class StatusLineOverlay {
 
     this.wave.lineTo(width, height + 4);
     this.wave.closePath();
-    this.wave.fill(rgba(deep, active > 0.02 ? 1 : active));
+    this.wave.fill(fillStyle(deep, active > 0.02 ? 1 : active));
 
     this.wave
       .rect(0, height - 10 - active * 4, width, 8 + active * 4)
-      .fill(rgba(mixColor(TOXIC_GREEN, ACID_GREEN, 0.38), active > 0.02 ? 0.96 : active));
+      .fill(fillStyle(mixColor(TOXIC_GREEN, ACID_GREEN, 0.38), active > 0.02 ? 0.96 : active));
 
     for (let lane = 0; lane < 3; lane++) {
       const offset = lane * 13 + Math.sin(time * 0.035 + lane) * 4;
@@ -505,15 +481,11 @@ class StatusLineOverlay {
       g.circle(ripple.x, ripple.y, ripple.radius + t * 46)
         .stroke({ color: ripple.color, alpha: (1 - t) * 0.42 * this.level, width: 2 });
       g.circle(ripple.x, ripple.y, 2 + t * 5)
-        .fill(rgba(mixColor(ripple.color, 0xffffff, 0.25), (1 - t) * 0.25 * this.level));
+        .fill(fillStyle(mixColor(ripple.color, 0xffffff, 0.25), (1 - t) * 0.25 * this.level));
       this.ripplesLayer.addChild(g);
     }
   }
 }
 
 const overlay = new StatusLineOverlay();
-overlay.init()
-  .then(() => overlay.connectWebSocket())
-  .catch((error: unknown) => {
-    console.error('[StatusLine] Failed to initialize overlay:', error);
-  });
+bootstrapOverlay(overlay, { label: 'StatusLine' });

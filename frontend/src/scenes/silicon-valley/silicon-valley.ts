@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
-import { clamp, OverlayEventSocket } from '../../shared/overlay';
+import { bootstrapOverlay, clamp, OverlayEventSocket } from '../../shared/overlay';
+import { createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -94,18 +95,7 @@ class SiliconValleyOverlay {
   });
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
-      antialias: true,
-      resolution: Math.min(devicePixelRatio, 2),
-      autoDensity: true,
-    });
-
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset    = '0';
+    const app = await createOverlayApp({ antialias: true });
     this.app = app;
 
     const { width: w, height: h } = app.screen;
@@ -224,9 +214,4 @@ class SiliconValleyOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new SiliconValleyOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === ' ') overlay.trigger();
-  });
-});
+bootstrapOverlay(overlay, { label: 'SiliconValleyOverlay', onTestKey: () => overlay.trigger() });

@@ -2,20 +2,22 @@ import * as PIXI from 'pixi.js';
 
 import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
+  bootstrapOverlay,
   clamp,
   colorFromString,
+  fillStyle,
   formatEventLabel,
   formatEventText,
   hashSeed,
   hslToRgb,
-  messageAvatarUrl,
+  luminance,
   mixColor,
   OverlayEventSocket,
   renderParts as renderMessageParts,
-  rgba,
   seedRng,
 } from '../../shared/overlay';
 import type { MessagePart, VisualEventMsg, VisualEventName } from '../../shared/overlay';
+import { createOverlayApp, loadAvatarImage } from '../../shared/pixi';
 
 interface FluidPalette {
   deep: number;
@@ -48,16 +50,11 @@ interface BlobParticle {
 }
 
 const CARD_GAP = 13;
-const CARD_LIFETIME = 30 * 60;
+// Ages and lifetimes throughout this scene are in PIXI ticker deltaTime units,
+// i.e. frames at the 60fps reference rate: 30 * 60 frames ~= 30 seconds.
+const CARD_LIFETIME_FRAMES = 30 * 60;
 const MAX_CARDS = 7;
 const TAU = Math.PI * 2;
-
-function luminance(color: number): number {
-  const r = ((color >> 16) & 0xff) / 255;
-  const g = ((color >> 8) & 0xff) / 255;
-  const b = (color & 0xff) / 255;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
 
 function makePalette(seed: number, userAccent: number): FluidPalette {
   const rng = seedRng(seed ^ 0xb10bd00d);
@@ -171,11 +168,11 @@ class WobblyBlob {
     const rng = seedRng(this.seed ^ 0xca7d);
 
     g.clear();
-    smoothClosedBlob(g, liquid, rgba(0x030409, 0.36));
+    smoothClosedBlob(g, liquid, fillStyle(0x030409, 0.36));
 
     const shadow = liquid.map((p) => ({ x: p.x + 8, y: p.y + 10 }));
-    smoothClosedBlob(g, shadow, rgba(0x000000, 0.20));
-    smoothClosedBlob(g, liquid, rgba(this.palette.deep, 0.88), {
+    smoothClosedBlob(g, shadow, fillStyle(0x000000, 0.20));
+    smoothClosedBlob(g, liquid, fillStyle(this.palette.deep, 0.88), {
       color: mixColor(this.palette.foam, this.palette.accent, 0.2),
       alpha: 0.40,
       width: 2,
@@ -185,15 +182,15 @@ class WobblyBlob {
       const lx = w * (0.16 + rng() * 0.70) + Math.sin(time * 0.013 + i) * 9;
       const ly = h * (0.18 + rng() * 0.56) + Math.cos(time * 0.011 + i * 1.8) * 6;
       g.ellipse(lx, ly, 42 + rng() * 82, 10 + rng() * 28)
-        .fill(rgba(i % 2 ? this.palette.skin : this.palette.skin2, 0.17 + rng() * 0.18));
+        .fill(fillStyle(i % 2 ? this.palette.skin : this.palette.skin2, 0.17 + rng() * 0.18));
     }
 
     g.ellipse(w * 0.30 + Math.sin(time * 0.018) * 8, h * 0.18, w * 0.24, 18)
-      .fill(rgba(this.palette.foam, 0.16));
+      .fill(fillStyle(this.palette.foam, 0.16));
     g.circle(w * 0.86, h * 0.22 + Math.sin(time * 0.02) * 4, 8)
-      .fill(rgba(this.palette.warm, 0.50));
+      .fill(fillStyle(this.palette.warm, 0.50));
     g.circle(w * 0.91, h * 0.58 + Math.cos(time * 0.016) * 4, 5)
-      .fill(rgba(this.palette.cool, 0.48));
+      .fill(fillStyle(this.palette.cool, 0.48));
   }
 }
 
@@ -270,22 +267,22 @@ class BlobMascot {
 
     g.clear();
     f.clear();
-    g.ellipse(31, 55, 23, 5).fill(rgba(0x000000, 0.20));
+    g.ellipse(31, 55, 23, 5).fill(fillStyle(0x000000, 0.20));
 
     this.drawAppendages(g, time);
-    smoothClosedBlob(g, points, rgba(this.profile.body, 0.98), {
+    smoothClosedBlob(g, points, fillStyle(this.profile.body, 0.98), {
       color: mixColor(this.profile.shade, 0x04040a, 0.24),
       alpha: 0.86,
       width: 4,
     });
     g.ellipse(19 + Math.sin(time * 0.025) * 2, 17, 12, 5)
-      .fill(rgba(mixColor(this.profile.body, 0xffffff, 0.42), 0.50));
+      .fill(fillStyle(mixColor(this.profile.body, 0xffffff, 0.42), 0.50));
 
     for (let i = 0; i < this.profile.spots; i++) {
       const angle = i * 1.73 + this.profile.eye;
       const x = 30 + Math.cos(angle) * (8 + (i % 3) * 4);
       const y = 30 + Math.sin(angle * 1.2) * 10;
-      g.circle(x, y, 2.4 + (i % 2) * 1.6).fill(rgba(this.profile.accent, 0.40));
+      g.circle(x, y, 2.4 + (i % 2) * 1.6).fill(fillStyle(this.profile.accent, 0.40));
     }
 
     this.drawFace(f, time);
@@ -293,22 +290,22 @@ class BlobMascot {
 
   private drawAppendages(g: PIXI.Graphics, time: number): void {
     if (this.profile.horns === 1 || this.profile.horns === 3) {
-      g.moveTo(15, 13).quadraticCurveTo(14, -2, 25, 10).quadraticCurveTo(21, 13, 15, 13).fill(rgba(this.profile.accent, 0.94));
-      g.moveTo(40, 12).quadraticCurveTo(45, -1, 49, 15).quadraticCurveTo(45, 13, 40, 12).fill(rgba(this.profile.accent, 0.94));
+      g.moveTo(15, 13).quadraticCurveTo(14, -2, 25, 10).quadraticCurveTo(21, 13, 15, 13).fill(fillStyle(this.profile.accent, 0.94));
+      g.moveTo(40, 12).quadraticCurveTo(45, -1, 49, 15).quadraticCurveTo(45, 13, 40, 12).fill(fillStyle(this.profile.accent, 0.94));
     } else if (this.profile.horns === 2) {
-      g.circle(19, 9, 5).fill(rgba(this.profile.accent, 0.92));
-      g.circle(42, 9, 5).fill(rgba(this.profile.accent, 0.92));
+      g.circle(19, 9, 5).fill(fillStyle(this.profile.accent, 0.92));
+      g.circle(42, 9, 5).fill(fillStyle(this.profile.accent, 0.92));
     } else if (this.profile.horns === 4) {
-      g.moveTo(25, 8).quadraticCurveTo(31, -4, 36, 9).fill(rgba(this.profile.accent, 0.92));
+      g.moveTo(25, 8).quadraticCurveTo(31, -4, 36, 9).fill(fillStyle(this.profile.accent, 0.92));
     }
 
     if (this.profile.limbs > 0) {
       const sway = Math.sin(time * 0.04) * 3;
-      g.ellipse(7, 33 + sway, 8, 4).fill(rgba(this.profile.shade, 0.96));
-      g.ellipse(52, 34 - sway, 8, 4).fill(rgba(this.profile.shade, 0.96));
+      g.ellipse(7, 33 + sway, 8, 4).fill(fillStyle(this.profile.shade, 0.96));
+      g.ellipse(52, 34 - sway, 8, 4).fill(fillStyle(this.profile.shade, 0.96));
       if (this.profile.limbs > 1) {
-        g.ellipse(22, 52, 5, 7).fill(rgba(this.profile.shade, 0.96));
-        g.ellipse(39, 52, 5, 7).fill(rgba(this.profile.shade, 0.96));
+        g.ellipse(22, 52, 5, 7).fill(fillStyle(this.profile.shade, 0.96));
+        g.ellipse(39, 52, 5, 7).fill(fillStyle(this.profile.shade, 0.96));
       }
     }
   }
@@ -335,16 +332,16 @@ class BlobMascot {
 
     const mouthY = 36;
     if (this.profile.mouth === 0) {
-      g.roundRect(24, mouthY, 15, 8, 4).fill(rgba(0x130910, 0.92));
-      g.circle(29, mouthY + 6, 3).fill(rgba(0xff7695, 0.88));
+      g.roundRect(24, mouthY, 15, 8, 4).fill(fillStyle(0x130910, 0.92));
+      g.circle(29, mouthY + 6, 3).fill(fillStyle(0xff7695, 0.88));
     } else if (this.profile.mouth === 1) {
       g.moveTo(24, mouthY).quadraticCurveTo(31, mouthY + 8, 39, mouthY).stroke({ color: 0x130910, width: 3, alpha: 0.9 });
     } else if (this.profile.mouth === 2) {
-      g.roundRect(24, mouthY, 15, 4, 2).fill(rgba(0x130910, 0.92));
-      g.rect(28, mouthY, 3, 4).fill(rgba(0xfff4c8, 0.95));
-      g.rect(34, mouthY, 3, 4).fill(rgba(0xfff4c8, 0.95));
+      g.roundRect(24, mouthY, 15, 4, 2).fill(fillStyle(0x130910, 0.92));
+      g.rect(28, mouthY, 3, 4).fill(fillStyle(0xfff4c8, 0.95));
+      g.rect(34, mouthY, 3, 4).fill(fillStyle(0xfff4c8, 0.95));
     } else if (this.profile.mouth === 3) {
-      g.circle(31, mouthY + 2, 5).fill(rgba(0x130910, 0.92));
+      g.circle(31, mouthY + 2, 5).fill(fillStyle(0x130910, 0.92));
     } else {
       g.moveTo(25, mouthY + 2).quadraticCurveTo(31, mouthY - 2, 37, mouthY + 2).stroke({ color: 0x130910, width: 3, alpha: 0.9 });
     }
@@ -360,28 +357,41 @@ class BlobMascot {
     radius: number,
   ): void {
     if (blink) {
-      g.roundRect(x - radius, y - 1, radius * 2, 3, 2).fill(rgba(pupil, 0.9));
+      g.roundRect(x - radius, y - 1, radius * 2, 3, 2).fill(fillStyle(pupil, 0.9));
       return;
     }
-    g.circle(x, y, radius).fill(rgba(eyeColor, 0.98));
+    g.circle(x, y, radius).fill(fillStyle(eyeColor, 0.98));
     g.circle(x + radius * 0.22, y + radius * 0.18, Math.max(2, radius * 0.42)).fill(pupil);
-    g.circle(x - radius * 0.25, y - radius * 0.24, Math.max(1, radius * 0.18)).fill(rgba(0xffffff, 0.72));
+    g.circle(x - radius * 0.25, y - radius * 0.24, Math.max(1, radius * 0.18)).fill(fillStyle(0xffffff, 0.72));
   }
 }
+
+// Horizontal card layout: [mascot slot | text column | avatar], with the text
+// column wrapping just short of the avatar. All values in px.
+const CARD_LAYOUT = {
+  avatarSize: 38,
+  avatarRightPad: 28,
+  mascotSlot: 74,
+  textPad: 18, // gap on both sides of the text column
+  minWrap: 190,
+  headerY: 18,
+  tagY: 24,
+  contentY: 47,
+  verticalChrome: 68, // header + padding above/below the message content
+  minHeight: 94,
+} as const;
 
 class ChatCard {
   readonly view = new PIXI.Container();
   readonly height: number;
-  private readonly lifetime = CARD_LIFETIME;
+  private readonly lifetime = CARD_LIFETIME_FRAMES;
   private age = 0;
   private targetY = 0;
   private positioned = false;
   private readonly blob: WobblyBlob;
   private readonly mascot: BlobMascot;
-  private readonly width: number;
 
   constructor(
-    app: PIXI.Application,
     msg: VisualEventMsg,
     width: number,
     palette: FluidPalette,
@@ -390,25 +400,43 @@ class ChatCard {
     mascotSeed: number,
     plateSeed: number,
   ) {
-    this.width = width;
     this.view.label = `fluid-chat:${msg.username}`;
     this.view.alpha = 0;
 
-    const avatarSize = 38;
-    const avatarRightPad = 28;
-    const avatarX = width - avatarRightPad - avatarSize;
-    const mascotSlot = 74;
-    const textX = mascotSlot + 18;
-    const wrap = Math.max(190, avatarX - textX - 18);
+    const L = CARD_LAYOUT;
+    const avatarX = width - L.avatarRightPad - L.avatarSize;
+    const textX = L.mascotSlot + L.textPad;
+    const wrap = Math.max(L.minWrap, avatarX - textX - L.textPad);
     const content = this.makeMessageContent(msg, palette, wrap);
 
-    this.height = Math.max(94, Math.ceil(content.height + 68));
+    this.height = Math.max(L.minHeight, Math.ceil(content.height + L.verticalChrome));
     this.blob = new WobblyBlob(width, this.height, palette, plateSeed);
     this.mascot = new BlobMascot(palette, userAccent, mascotSeed);
+    const name = this.makeNameText(msg, palette);
+    const tag = this.makeTagText(msg, palette);
+    const avatar = this.makeAvatar(userSeed, palette, userAccent, msg.avatarUrl);
+
     this.mascot.view.x = 14;
     this.mascot.view.y = Math.max(22, this.height - 72);
+    name.x = textX;
+    name.y = L.headerY;
+    tag.x = Math.max(textX, avatarX - tag.width - 12);
+    tag.y = L.tagY;
+    content.x = textX;
+    content.y = L.contentY;
+    avatar.x = avatarX;
+    avatar.y = Math.round((this.height - L.avatarSize) / 2);
 
-    const name = new PIXI.Text({
+    this.view.addChild(this.blob.view);
+    this.view.addChild(this.mascot.view);
+    this.view.addChild(name);
+    this.view.addChild(tag);
+    this.view.addChild(content);
+    this.view.addChild(avatar);
+  }
+
+  private makeNameText(msg: VisualEventMsg, palette: FluidPalette): PIXI.Text {
+    return new PIXI.Text({
       text: msg.username || 'anonymous',
       style: {
         fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif',
@@ -420,7 +448,10 @@ class ChatCard {
         dropShadow: { color: 0x000000, alpha: 0.45, distance: 2, blur: 4 },
       },
     });
-    const tag = new PIXI.Text({
+  }
+
+  private makeTagText(msg: VisualEventMsg, palette: FluidPalette): PIXI.Text {
+    return new PIXI.Text({
       text: eventLabel(msg.event),
       style: {
         fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif',
@@ -431,25 +462,6 @@ class ChatCard {
         stroke: { color: 0x05060b, width: 2 },
       },
     });
-    const avatar = this.makeAvatar(userSeed, palette, userAccent, messageAvatarUrl(msg));
-
-    name.x = textX;
-    name.y = 18;
-    tag.x = Math.max(textX, avatarX - tag.width - 12);
-    tag.y = 24;
-    content.x = textX;
-    content.y = 47;
-    avatar.x = avatarX;
-    avatar.y = Math.round((this.height - avatarSize) / 2);
-
-    this.view.addChild(this.blob.view);
-    this.view.addChild(this.mascot.view);
-    this.view.addChild(name);
-    this.view.addChild(tag);
-    this.view.addChild(content);
-    this.view.addChild(avatar);
-
-    app.stage.addChild(this.view);
   }
 
   setTarget(x: number, y: number): void {
@@ -528,11 +540,11 @@ class ChatCard {
     };
 
     const addImage = (part: MessagePart) => {
-      if (!part.url && !part.animated_url && !part.animatedUrl) return;
+      if (!part.url && !part.animatedUrl) return;
       const holder = new PIXI.Container();
       const backing = new PIXI.Graphics()
         .circle(imageSize / 2, imageSize / 2, imageSize / 2)
-        .fill(rgba(palette.foam, 0.18))
+        .fill(fillStyle(palette.foam, 0.18))
         .stroke({ color: palette.foam, width: 1.5, alpha: 0.42 });
       holder.addChild(backing);
       this.loadInlineImage(part, holder, imageSize);
@@ -551,7 +563,7 @@ class ChatCard {
   private loadInlineImage(part: MessagePart, holder: PIXI.Container, size: number): void {
     loadEmoteDisplay(part)
       .then((sprite) => {
-        if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
+        if (holder.destroyed) return;
         fitDisplayObject(sprite, size - 3);
         sprite.x += 1;
         sprite.y += 1;
@@ -584,13 +596,20 @@ class ChatCard {
     const fallback = new PIXI.Graphics();
     const ring = this.avatarRing(palette, userColor);
     const rng = seedRng(seed ^ 0xfaceb10b);
-    fallback.circle(19, 19, 19).fill(rgba(mixColor(userColor, palette.deep, 0.24), 0.96));
-    fallback.circle(16 + rng() * 6, 14 + rng() * 5, 8).fill(rgba(palette.foam, 0.30));
-    fallback.circle(23, 23, 10).fill(rgba(palette.warm, 0.22));
+    fallback.circle(19, 19, 19).fill(fillStyle(mixColor(userColor, palette.deep, 0.24), 0.96));
+    fallback.circle(16 + rng() * 6, 14 + rng() * 5, 8).fill(fillStyle(palette.foam, 0.30));
+    fallback.circle(23, 23, 10).fill(fillStyle(palette.warm, 0.22));
     view.addChild(fallback);
     view.addChild(ring);
 
-    if (avatarUrl) this.loadAvatarImage(avatarUrl, view, fallback);
+    if (avatarUrl) {
+      loadAvatarImage(avatarUrl, view, fallback, {
+        size: CARD_LAYOUT.avatarSize,
+        addAtIndex: 1,
+        roundPixels: false,
+        label: 'FluidChatOverlay',
+      });
+    }
     return view;
   }
 
@@ -601,33 +620,7 @@ class ChatCard {
       .circle(19, 19, 18)
       .stroke({ color: mixColor(palette.foam, userColor, 0.26), width: 2.5, alpha: 0.96 })
       .circle(13, 10, 3)
-      .fill(rgba(0xffffff, 0.58));
-  }
-
-  private loadAvatarImage(url: string, view: PIXI.Container, fallback: PIXI.Container): void {
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.referrerPolicy = 'no-referrer';
-    image.onload = () => {
-      if ((view as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-      fallback.alpha = 0;
-      const sprite = new PIXI.Sprite(PIXI.Texture.from(image));
-      const size = 38;
-      const scale = size / Math.max(image.naturalWidth, image.naturalHeight, 1);
-      sprite.scale.set(scale);
-      sprite.x = Math.round((size - sprite.width) / 2);
-      sprite.y = Math.round((size - sprite.height) / 2);
-
-      const mask = new PIXI.Graphics().circle(size / 2, size / 2, size / 2).fill(0xffffff);
-      sprite.mask = mask;
-      view.addChild(mask);
-      view.addChildAt(sprite, Math.min(1, view.children.length));
-    };
-    image.onerror = () => {
-      console.warn('[FluidChatOverlay] avatar image failed to load:', url);
-      fallback.alpha = 1;
-    };
-    image.src = url;
+      .fill(fillStyle(0xffffff, 0.58));
   }
 }
 
@@ -645,18 +638,7 @@ class FluidChatOverlay {
   private burstParticles: BlobParticle[] = [];
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
-      antialias: true,
-      autoDensity: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
-    });
-
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset = '0';
+    const app = await createOverlayApp({ antialias: true });
 
     this.app = app;
     this.burstLayer = new PIXI.Container();
@@ -681,7 +663,6 @@ class FluidChatOverlay {
     const palette = makePalette(plateSeed, userAccent);
     const width = this.cardWidth();
     const card = new ChatCard(
-      this.app,
       msg,
       width,
       palette,
@@ -690,6 +671,7 @@ class FluidChatOverlay {
       mascotSeed,
       plateSeed,
     );
+    this.app.stage.addChild(card.view);
     this.cards.unshift(card);
 
     while (this.cards.length > MAX_CARDS) {
@@ -784,7 +766,7 @@ class FluidChatOverlay {
       const color = colors[Math.floor(rng() * colors.length)];
       const view = new PIXI.Graphics()
         .circle(0, 0, radius)
-        .fill(rgba(color, 0.58));
+        .fill(fillStyle(color, 0.58));
       view.x = x;
       view.y = y;
       this.burstLayer.addChild(view);
@@ -825,10 +807,9 @@ class FluidChatOverlay {
 }
 
 const overlay = new FluidChatOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.key !== ' ') return;
+bootstrapOverlay(overlay, {
+  label: 'FluidChatOverlay',
+  onTestKey: () => {
     const seed = Math.floor(Math.random() * 0xffffff);
     overlay.spawn({
       event: 'chat_message',
@@ -837,5 +818,5 @@ overlay.init().then(() => {
       color: `#${seed.toString(16).padStart(6, '0')}`,
       seed,
     });
-  });
+  },
 });

@@ -2,19 +2,20 @@ import * as PIXI from 'pixi.js';
 
 import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
+  bootstrapOverlay,
   clamp,
   colorFromString,
+  fillStyle,
   formatEventLabel,
   formatEventText,
   hashSeed,
   hslToRgb,
-  messageAvatarUrl,
   mixColor,
   OverlayEventSocket,
-  rgba,
   seedRng,
 } from '../../shared/overlay';
-import type { VisualEventMsg, VisualEventName } from '../../shared/overlay';
+import type { EmoteItem, VisualEventMsg, VisualEventName } from '../../shared/overlay';
+import { createOverlayApp, loadAvatarImage, makePixelTexture } from '../../shared/pixi';
 
 interface MatrixColumn {
   x: number;
@@ -33,14 +34,9 @@ interface DataSpark {
   maxLife: number;
 }
 
-interface TerminalEmote {
-  name: string;
-  url: string;
-  animated_url?: string;
-  static_url?: string;
-}
-
 const CARD_GAP = 10;
+// Ticker deltaTime units, i.e. frames at the 60fps PIXI ticker baseline:
+// 32 * 60 frames = 32 seconds on screen.
 const CARD_LIFETIME = 32 * 60;
 const MAX_CARDS = 8;
 const FONT = '"Courier New", "Lucida Console", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
@@ -54,18 +50,18 @@ function eventLabel(event: VisualEventName): string {
   return formatEventLabel(event, { chatLabel: 'MSG', separator: '-' });
 }
 
-function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmote[] } {
+function terminalParts(msg: VisualEventMsg): { text: string; emotes: EmoteItem[] } {
   const parts = msg.parts?.filter((part) => part.type === 'text' || part.type === 'image') ?? [];
-  const emotes: TerminalEmote[] = [];
+  const emotes: EmoteItem[] = [];
   if (parts.length > 0) {
     const rendered = parts.map((part) => {
       if (part.type === 'image') {
-        if (part.url || part.animated_url || part.animatedUrl) {
+        if (part.url || part.animatedUrl) {
           emotes.push({
             name: part.name ?? 'emote',
             url: part.url ?? '',
-            animated_url: part.animated_url ?? part.animatedUrl,
-            static_url: part.static_url ?? part.staticUrl,
+            animatedUrl: part.animatedUrl,
+            staticUrl: part.staticUrl,
           });
         }
         return '';
@@ -77,27 +73,8 @@ function terminalParts(msg: VisualEventMsg): { text: string; emotes: TerminalEmo
 
   return {
     text: messageText(msg),
-    emotes: (msg.emotes ?? [])
-      .filter((emote) => emote.url)
-      .map((emote) => ({
-        name: emote.name,
-        url: emote.url,
-        animated_url: emote.animated_url ?? emote.animatedUrl,
-        static_url: emote.static_url ?? emote.staticUrl,
-      })),
+    emotes: (msg.emotes ?? []).filter((emote) => emote.url),
   };
-}
-
-function makePixelTexture(app: PIXI.Application): PIXI.Texture {
-  const g = new PIXI.Graphics();
-  g.rect(0, 0, 1, 1).fill(0xffffff);
-  const texture = app.renderer.generateTexture({
-    target: g,
-    frame: new PIXI.Rectangle(0, 0, 1, 1),
-    resolution: 1,
-  });
-  g.destroy();
-  return texture;
 }
 
 class TerminalBackground {
@@ -119,7 +96,9 @@ class TerminalBackground {
   layout(width: number, height: number): void {
     const rng = seedRng(0xdec0de);
     this.columns = [];
-    this.glyphLayer.removeChildren();
+    for (const glyph of this.glyphLayer.removeChildren()) {
+      glyph.destroy();
+    }
     this.glyphs = [];
 
     const colGap = 22;
@@ -186,24 +165,29 @@ class TerminalBackground {
     this.grid.clear();
     this.scanlines.clear();
 
-    this.grid.rect(0, 0, width, height).fill(rgba(0x001207, 0.10));
+    this.grid.rect(0, 0, width, height).fill(fillStyle(0x001207, 0.10));
     for (let x = 0; x < width; x += 48) {
-      this.grid.rect(x, 0, 1, height).fill(rgba(0x21ff68, 0.08));
+      this.grid.rect(x, 0, 1, height).fill(fillStyle(0x21ff68, 0.08));
     }
     for (let y = 0; y < height; y += 48) {
-      this.grid.rect(0, y, width, 1).fill(rgba(0x21ff68, 0.06));
+      this.grid.rect(0, y, width, 1).fill(fillStyle(0x21ff68, 0.06));
     }
 
     for (let y = 0; y < height; y += 4) {
-      this.scanlines.rect(0, y, width, 1).fill(rgba(0x001607, 0.42));
+      this.scanlines.rect(0, y, width, 1).fill(fillStyle(0x001607, 0.42));
     }
-    this.scanlines.rect(0, 0, width, 14).fill(rgba(0x8cff9d, 0.05));
+    this.scanlines.rect(0, 0, width, 14).fill(fillStyle(0x8cff9d, 0.05));
   }
 }
 
 class HackerCard {
+  private static readonly EMOTE_CHIP = 28;
+  private static readonly EMOTE_GAP = 6;
+
   readonly view = new PIXI.Container();
   readonly height: number;
+  private readonly backdrop = new PIXI.Graphics();
+  private readonly chrome = new PIXI.Graphics();
   private readonly frame = new PIXI.Graphics();
   private readonly typedText: PIXI.Text;
   private readonly emoteLayer = new PIXI.Container();
@@ -217,6 +201,7 @@ class HackerCard {
   private targetY = 0;
   private positioned = false;
   private visibleChars = 0;
+  private readonly charAdvance: number;
   private readonly charRate: number;
   private readonly width: number;
   private readonly seed: number;
@@ -245,7 +230,13 @@ class HackerCard {
       text: this.code,
       style: this.messageStyle(wrap),
     });
-    const emoteHeight = content.emotes.length > 0 ? 34 * Math.ceil(content.emotes.length / Math.max(1, Math.floor(wrap / 34))) + 8 : 0;
+    // The monospace glyph advance, measured from the actual style (as the
+    // width added by one extra character, so stroke padding cancels out),
+    // used to position the typing cursor after the last visible character.
+    const style = new PIXI.TextStyle(this.messageStyle(wrap));
+    this.charAdvance = PIXI.CanvasTextMetrics.measureText('MM', style).width
+      - PIXI.CanvasTextMetrics.measureText('M', style).width;
+    const emoteHeight = this.emoteStripHeight(content.emotes.length, wrap);
     this.height = Math.max(98, Math.ceil(fullText.height + 65 + emoteHeight));
     this.emoteLayer.x = 18;
     this.emoteLayer.y = 44 + fullText.height + 7;
@@ -254,7 +245,7 @@ class HackerCard {
     fullText.destroy();
 
     const header = this.makeHeader(msg, width);
-    const avatar = this.makeAvatar(texture, userSeed, userAccent, messageAvatarUrl(msg));
+    const avatar = this.makeAvatar(texture, userSeed, userAccent, msg.avatarUrl);
     this.typedText = new PIXI.Text({
       text: '',
       style: this.messageStyle(wrap),
@@ -267,13 +258,16 @@ class HackerCard {
     header.x = 18;
     header.y = 16;
 
+    this.view.addChild(this.backdrop);
     this.view.addChild(this.frame);
+    this.view.addChild(this.chrome);
     this.view.addChild(this.noise);
     this.view.addChild(header);
     this.view.addChild(this.typedText);
     this.view.addChild(this.emoteLayer);
     this.view.addChild(this.cursor);
     this.view.addChild(avatar);
+    this.drawChrome();
     this.drawFrame(0);
     app.stage.addChild(this.view);
   }
@@ -384,9 +378,17 @@ class HackerCard {
     return view;
   }
 
-  private makeEmoteStrip(emotes: TerminalEmote[], wrap: number): void {
-    const chip = 28;
-    const gap = 6;
+  private emoteStripHeight(count: number, wrap: number): number {
+    if (count === 0) return 0;
+    const slot = HackerCard.EMOTE_CHIP + HackerCard.EMOTE_GAP;
+    const perRow = Math.max(1, Math.floor(wrap / slot));
+    const rows = Math.ceil(count / perRow);
+    return rows * slot + 8;
+  }
+
+  private makeEmoteStrip(emotes: EmoteItem[], wrap: number): void {
+    const chip = HackerCard.EMOTE_CHIP;
+    const gap = HackerCard.EMOTE_GAP;
     let x = 0;
     let y = 0;
 
@@ -399,23 +401,23 @@ class HackerCard {
       const holder = new PIXI.Container();
       const frame = new PIXI.Graphics()
         .rect(0, 0, chip, chip)
-        .fill(rgba(0x001804, 0.82))
+        .fill(fillStyle(0x001804, 0.82))
         .rect(1, 1, chip - 2, chip - 2)
         .stroke({ color: 0x35ff6b, width: 1, alpha: 0.62 });
       holder.x = x;
       holder.y = y;
       holder.addChild(frame);
-      this.loadEmoteImage(emote, holder, chip, emote.name);
+      this.loadEmoteImage(emote, holder, chip);
       this.emoteLayer.addChild(holder);
       x += chip + gap;
     }
   }
 
-  private loadEmoteImage(emote: TerminalEmote, holder: PIXI.Container, size: number, name: string): void {
+  private loadEmoteImage(emote: EmoteItem, holder: PIXI.Container, size: number): void {
     loadEmoteDisplay(emote)
       .then((sprite) => {
-        if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-        sprite.roundPixels = true;
+        if (holder.destroyed) return;
+        (sprite as PIXI.Container & { roundPixels?: boolean }).roundPixels = true;
         fitDisplayObject(sprite, size - 4);
         sprite.x += 2;
         sprite.y += 2;
@@ -423,7 +425,7 @@ class HackerCard {
       })
       .catch(() => {
         const fallback = new PIXI.Text({
-          text: name.slice(0, 2).toUpperCase(),
+          text: emote.name.slice(0, 2).toUpperCase(),
           style: {
             fontFamily: FONT,
             fontSize: 9,
@@ -485,7 +487,15 @@ class HackerCard {
     view.addChild(fallback);
     view.addChild(this.makeAvatarFrame(userAccent));
 
-    if (avatarUrl) this.loadAvatarImage(avatarUrl, view, fallback, mask);
+    if (avatarUrl) {
+      loadAvatarImage(avatarUrl, view, fallback, {
+        size: 30,
+        offset: 1,
+        mask,
+        addAtIndex: 2,
+        label: 'HackerChatOverlay',
+      });
+    }
     return view;
   }
 
@@ -496,66 +506,48 @@ class HackerCard {
       .circle(16, 16, 13)
       .stroke({ color: mixColor(0x35ff6b, userAccent, 0.32), width: 3, alpha: 0.96 })
       .rect(3, 15, 26, 1)
-      .fill(rgba(0xd3ffdb, 0.30));
+      .fill(fillStyle(0xd3ffdb, 0.30));
   }
 
-  private loadAvatarImage(
-    url: string,
-    view: PIXI.Container,
-    fallback: PIXI.Container,
-    mask: PIXI.Graphics,
-  ): void {
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.referrerPolicy = 'no-referrer';
+  /**
+   * Static card chrome, drawn once (backdrop below the pulse border, strokes
+   * and bars above it). drawFrame handles only the animated parts.
+   */
+  private drawChrome(): void {
+    const w = this.width;
+    const h = this.height;
+    const glow = mixColor(0x26ff63, this.userAccent, 0.28);
 
-    image.onload = () => {
-      if ((view as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-      fallback.alpha = 0;
-      const sprite = new PIXI.Sprite(PIXI.Texture.from(image));
-      sprite.roundPixels = true;
-      const size = 30;
-      const scale = size / Math.max(image.naturalWidth, image.naturalHeight, 1);
-      sprite.scale.set(scale);
-      sprite.x = 1 + Math.round((size - sprite.width) / 2);
-      sprite.y = 1 + Math.round((size - sprite.height) / 2);
-      sprite.mask = mask;
-      view.addChildAt(sprite, Math.min(2, view.children.length));
-    };
-    image.onerror = () => {
-      console.warn('[HackerChatOverlay] avatar image failed to load:', url);
-      fallback.alpha = 1;
-    };
-    image.src = url;
+    this.backdrop.rect(5, 5, w, h).fill(fillStyle(0x001104, 0.42));
+    this.backdrop.rect(0, 0, w, h).fill(fillStyle(0x000b03, 0.88));
+
+    const g = this.chrome;
+    g.rect(8, 8, w - 16, h - 16).stroke({ color: 0x0b6125, width: 1, alpha: 0.72 });
+    g.rect(0, 0, 38, 3).fill(fillStyle(0xc4ffd0, 0.86));
+    g.rect(44, 0, 74, 3).fill(fillStyle(glow, 0.64));
+    g.rect(w - 92, h - 3, 88, 3).fill(fillStyle(glow, 0.58));
+    g.rect(20, 39, w - 40, 1).fill(fillStyle(0x38ff6b, 0.36));
   }
 
   private drawFrame(time: number): void {
-    const g = this.frame;
     const n = this.noise;
     const w = this.width;
     const h = this.height;
     const glow = mixColor(0x26ff63, this.userAccent, 0.28);
     const pulse = 0.58 + Math.sin(time * 0.08 + this.seed) * 0.16;
 
-    g.clear();
-    g.rect(5, 5, w, h).fill(rgba(0x001104, 0.42));
-    g.rect(0, 0, w, h).fill(rgba(0x000b03, 0.88));
-    g.rect(2, 2, w - 4, h - 4).stroke({ color: glow, width: 2, alpha: pulse });
-    g.rect(8, 8, w - 16, h - 16).stroke({ color: 0x0b6125, width: 1, alpha: 0.72 });
-    g.rect(0, 0, 38, 3).fill(rgba(0xc4ffd0, 0.86));
-    g.rect(44, 0, 74, 3).fill(rgba(glow, 0.64));
-    g.rect(w - 92, h - 3, 88, 3).fill(rgba(glow, 0.58));
-    g.rect(20, 39, w - 40, 1).fill(rgba(0x38ff6b, 0.36));
-    g.rect(20, h - 14, Math.max(24, (w - 40) * clamp(this.visibleChars / this.code.length, 0, 1)), 2)
-      .fill(rgba(0x9dffae, 0.62));
+    this.frame.clear();
+    this.frame.rect(2, 2, w - 4, h - 4).stroke({ color: glow, width: 2, alpha: pulse });
 
     n.clear();
+    n.rect(20, h - 14, Math.max(24, (w - 40) * clamp(this.visibleChars / this.code.length, 0, 1)), 2)
+      .fill(fillStyle(0x9dffae, 0.62));
     const rng = seedRng(this.seed ^ Math.floor(time * 13));
     for (let i = 0; i < 12; i++) {
       const y = Math.floor(rng() * h);
       const x = Math.floor(rng() * w);
       const len = 8 + rng() * 70;
-      n.rect(x, y, len, 1).fill(rgba(i % 2 ? 0xc8ffd1 : glow, 0.08 + rng() * 0.12));
+      n.rect(x, y, len, 1).fill(fillStyle(i % 2 ? 0xc8ffd1 : glow, 0.08 + rng() * 0.12));
     }
   }
 
@@ -567,9 +559,9 @@ class HackerCard {
 
     const text = this.typedText.text;
     const lastLine = text.split('\n').pop() ?? '';
-    const estimatedX = this.typedText.x + Math.min(bounds.width, Math.max(0, lastLine.length * 9.4));
+    const estimatedX = this.typedText.x + Math.min(bounds.width, Math.max(0, lastLine.length * this.charAdvance));
     const estimatedY = this.typedText.y + Math.max(0, this.typedText.height - 20);
-    this.cursor.rect(estimatedX + 3, estimatedY + 2, 9, 16).fill(rgba(0xc8ffd1, 0.82));
+    this.cursor.rect(estimatedX + 3, estimatedY + 2, 9, 16).fill(fillStyle(0xc8ffd1, 0.82));
   }
 }
 
@@ -588,18 +580,11 @@ class HackerChatOverlay {
   private sparks: DataSpark[] = [];
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
+    const app = await createOverlayApp({
       antialias: false,
       resolution: 1,
       roundPixels: true,
     });
-
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset = '0';
     app.canvas.style.imageRendering = 'pixelated';
 
     this.app = app;
@@ -720,7 +705,7 @@ class HackerChatOverlay {
     for (let i = 0; i < 20; i++) {
       const view = new PIXI.Graphics()
         .rect(0, 0, 3 + rng() * 16, 2)
-        .fill(rgba(i % 2 ? 0xc8ffd1 : userAccent, 0.78));
+        .fill(fillStyle(i % 2 ? 0xc8ffd1 : userAccent, 0.78));
       const angle = -Math.PI * 0.86 + rng() * Math.PI * 1.05;
       const speed = 1.2 + rng() * 3.4;
       view.x = x;
@@ -759,10 +744,9 @@ class HackerChatOverlay {
 }
 
 const overlay = new HackerChatOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.key !== ' ') return;
+bootstrapOverlay(overlay, {
+  label: 'HackerChatOverlay',
+  onTestKey: () => {
     const seed = Math.floor(Math.random() * 0xffffff);
     overlay.spawn({
       event: 'chat_message',
@@ -771,5 +755,5 @@ overlay.init().then(() => {
       color: `#${seed.toString(16).padStart(6, '0')}`,
       seed,
     });
-  });
+  },
 });

@@ -1,9 +1,3 @@
-declare global {
-  interface Window {
-    PIXEL_CHAT_THEME?: 'razer';
-  }
-}
+import { startPixelChat } from '../pixel-chat/pixel-chat-overlay';
 
-window.PIXEL_CHAT_THEME = 'razer';
-
-void import('../pixel-chat/pixel-chat');
+startPixelChat('razer');

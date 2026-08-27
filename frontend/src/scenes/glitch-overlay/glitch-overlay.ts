@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
-import { clamp, OverlayEventSocket } from '../../shared/overlay';
+import { bootstrapOverlay, clamp, OverlayEventSocket } from '../../shared/overlay';
+import { createOverlayApp } from '../../shared/pixi';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,18 +66,13 @@ class GlitchOverlay {
   });
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
+    const app = await createOverlayApp({
       antialias: false,
       resolution: 1,
+      autoDensity: false,
       roundPixels: true,
     });
 
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset = '0';
     app.canvas.style.width = '100%';
     app.canvas.style.height = '100%';
     app.canvas.style.imageRendering = 'pixelated';
@@ -89,7 +85,7 @@ class GlitchOverlay {
     this.eventSocket.connect();
   }
 
-  private trigger(): void {
+  trigger(): void {
     if (!this.app) return;
 
     const width = this.app.screen.width;
@@ -227,9 +223,4 @@ class GlitchOverlay {
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 const overlay = new GlitchOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (e) => {
-    if (e.key === ' ') overlay['trigger']();
-  });
-});
+bootstrapOverlay(overlay, { label: 'GlitchOverlay', onTestKey: () => overlay.trigger() });

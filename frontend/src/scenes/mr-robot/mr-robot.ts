@@ -1,7 +1,7 @@
 import * as PIXI from 'pixi.js';
 
-import { OverlayEventSocket, clamp } from '../../shared/overlay';
-import type { VisualEventMsg } from '../../shared/overlay';
+import { bootstrapOverlay, OverlayEventSocket } from '../../shared/overlay';
+import { buildVignette, createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,7 @@ interface MicroBurst {
 
 class MrRobotOverlay {
   private app: PIXI.Application | null = null;
+  private readonly staticLayers = new PIXI.Container();
   private readonly ambientGfx = new PIXI.Graphics();
   private readonly noiseGfx   = new PIXI.Graphics();
   private readonly glitchGfx  = new PIXI.Graphics();
@@ -57,24 +58,10 @@ class MrRobotOverlay {
   });
 
   async init(): Promise<void> {
-    const app = new PIXI.Application();
-    await app.init({
-      resizeTo: window,
-      backgroundAlpha: 0,
-      antialias: false,
-      resolution: Math.min(devicePixelRatio, 2),
-      autoDensity: true,
-    });
-
-    document.body.appendChild(app.canvas);
-    app.canvas.style.position = 'fixed';
-    app.canvas.style.inset    = '0';
+    const app = await createOverlayApp({ antialias: false });
     this.app = app;
 
-    const { width: w, height: h } = app.screen;
-
-    app.stage.addChild(this.buildScanlines(w, h));
-    app.stage.addChild(this.buildVignette(w, h));
+    app.stage.addChild(this.staticLayers);
     app.stage.addChild(this.ambientGfx);
     app.stage.addChild(this.noiseGfx);
     app.stage.addChild(this.glitchGfx);
@@ -89,6 +76,8 @@ class MrRobotOverlay {
     ];
     app.stage.filters = [tint];
 
+    this.rebuildStaticLayers();
+    window.addEventListener('resize', () => this.rebuildStaticLayers());
     app.ticker.add(({ deltaTime }) => this.tick(deltaTime));
   }
 
@@ -126,19 +115,12 @@ class MrRobotOverlay {
     return g;
   }
 
-  private buildVignette(w: number, h: number): PIXI.Graphics {
-    const g   = new PIXI.Graphics();
-    const dim = Math.min(w, h);
-    for (let i = 0; i < 22; i++) {
-      const t     = i / 22;
-      const alpha = Math.pow(1 - t, 2) * 0.32;
-      const inset = t * 0.32 * dim;
-      g.rect(0,         0,         w,     inset).fill({ color: 0x000000, alpha });
-      g.rect(0,         h - inset, w,     inset).fill({ color: 0x000000, alpha });
-      g.rect(0,         0,         inset, h    ).fill({ color: 0x000000, alpha });
-      g.rect(w - inset, 0,         inset, h    ).fill({ color: 0x000000, alpha });
-    }
-    return g;
+  private rebuildStaticLayers(): void {
+    if (!this.app) return;
+    const { width: w, height: h } = this.app.screen;
+    this.staticLayers.removeChildren().forEach((child) => child.destroy());
+    this.staticLayers.addChild(this.buildScanlines(w, h));
+    this.staticLayers.addChild(buildVignette(w, h));
   }
 
   // ── Ambient animation ────────────────────────────────────────────────────────
@@ -260,9 +242,4 @@ class MrRobotOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new MrRobotOverlay();
-overlay.init().then(() => {
-  overlay.connectWebSocket();
-  window.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === ' ') overlay.trigger();
-  });
-});
+bootstrapOverlay(overlay, { label: 'MrRobotOverlay', onTestKey: () => overlay.trigger() });
