@@ -1,7 +1,15 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
-from vizer.bot import _fragment_emote_url, _message_parts_from_fragments
+from vizer import bot as bot_module
+from vizer.bot import (
+    _fragment_emote_url,
+    _message_parts_from_fragments,
+    get_user_id,
+)
+from vizer.config import TwitchCredentials
 
 
 class BotFragmentParsingTest(unittest.TestCase):
@@ -67,6 +75,34 @@ class BotFragmentParsingTest(unittest.TestCase):
             _fragment_emote_url(fragment),
             "https://static-cdn.jtvnw.net/emoticons/v2/1/static/dark/3.0",
         )
+
+
+class GetUserIdTest(unittest.TestCase):
+    def test_login_does_not_touch_the_token_file(self) -> None:
+        login_kwargs: dict[str, object] = {}
+
+        class FakeClient:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeClient":
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+            async def login(self, **kwargs: object) -> None:
+                login_kwargs.update(kwargs)
+
+            async def fetch_users(self, *, logins: list[str]) -> list[SimpleNamespace]:
+                return [SimpleNamespace(id="4242", name=logins[0])]
+
+        credentials = TwitchCredentials(client_id="cid", client_secret="secret")
+        with mock.patch.object(bot_module, "Client", FakeClient):
+            user_id = asyncio.run(get_user_id("streamer", credentials))
+
+        self.assertEqual(user_id, "4242")
+        self.assertEqual(login_kwargs, {"load_tokens": False, "save_tokens": False})
 
 
 if __name__ == "__main__":

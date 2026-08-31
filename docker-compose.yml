@@ -1,12 +1,20 @@
 services:
   vizer:
     image: ${DOCKER_USERNAME:-worxbend}/twitch-vizer:latest
+    container_name: twitch-vizer
     ports:
       - "8080:8080"
+      # Twitch OAuth callback. The registered redirect URL is
+      # http://localhost:4343/oauth/callback, so the host browser must reach
+      # this port during first-run authorization (and when adding accounts).
+      - "4343:4343"
     env_file: .env
     environment:
       VIZER_SERVER_HOST: "0.0.0.0"
       VIZER_SERVER_PORT: "8080"
+      # Binding localhost inside the container would be unreachable through
+      # the 4343 port mapping above.
+      VIZER_OAUTH_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
     restart: unless-stopped

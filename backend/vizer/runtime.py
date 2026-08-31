@@ -7,14 +7,15 @@ creates objects and connects them.
 
 import asyncio
 import logging
-from pathlib import Path
 
 from twitchio import eventsub
+from twitchio.web import AiohttpAdapter
 
-from .bot import VizBot, get_user_id
+from .bot import VizBot
 from .config import Settings, load_settings
 from .handler import MessageHandler, QueuedMessage
 from .log import setup_logging
+from .oauth_setup import ensure_authorized, vizer_scopes
 from .server import VizServer
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -35,7 +36,9 @@ async def run(settings: Settings | None = None) -> None:
         emotes_db_path=settings.emotes_db_path,
     )
 
-    bot_id = await get_user_id(settings.bot_username, settings.twitch)
+    # Blocks on the first run until the user approves the app in a browser;
+    # afterwards the persisted token file makes this a quick validation call.
+    bot_id = await ensure_authorized(settings)
     subs: list[eventsub.SubscriptionPayload] = [
         eventsub.ChatMessageSubscription(broadcaster_user_id=bot_id, user_id=bot_id)
     ]
@@ -46,19 +49,19 @@ async def run(settings: Settings | None = None) -> None:
         subs=subs,
         message_queue=message_queue,
         credentials=settings.twitch,
+        # The running bot serves the same OAuth routes the bootstrap used, so
+        # additional broadcasters can authorize while the bot is live.
+        adapter=AiohttpAdapter(
+            host=settings.oauth.host,
+            port=settings.oauth.port,
+            domain=settings.oauth.domain,
+        ),
+        scopes=vizer_scopes(),
         token_file=settings.token_file,
     ) as bot:
-        await bot.add_token(
-            settings.twitch.access_token,
-            settings.twitch.refresh_token,
-        )
-
-        # Tokens persisted from a previous run are loaded after the .env token
-        # above, so refreshed tokens win over a possibly stale TWITCH_*_TOKEN.
+        # ensure_authorized guarantees the token file exists by now.
         tasks = [
-            asyncio.create_task(
-                bot.start(load_tokens=Path(settings.token_file).exists())
-            ),
+            asyncio.create_task(bot.start(load_tokens=True)),
             asyncio.create_task(server.serve()),
             asyncio.create_task(handler.process_queue()),
         ]

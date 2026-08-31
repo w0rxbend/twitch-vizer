@@ -13,7 +13,7 @@ Subscriptions are registered in two places:
   - __init__: the initial ChatMessageSubscription for the bot's own channel,
     required for the EventSub handshake before any user authenticates.
   - event_oauth_authorized: per-broadcaster subscriptions added after a user
-    completes the OAuth flow via the twitchio built-in /oauth/authorize route.
+    completes the OAuth flow via the twitchio built-in /oauth route.
 """
 
 import asyncio
@@ -21,9 +21,10 @@ import logging
 from typing import Any
 
 import twitchio
-from twitchio import ChatMessage, Client, eventsub, MultiSubscribePayload
+from twitchio import ChatMessage, Client, eventsub, MultiSubscribePayload, Scopes
 from twitchio.authentication import UserTokenPayload, ValidateTokenPayload
 from twitchio.ext import commands
+from twitchio.web import AiohttpAdapter
 
 from .config import TwitchCredentials
 from .emote_urls import (
@@ -232,7 +233,7 @@ async def get_user_id(username: str, credentials: TwitchCredentials) -> str:
         client_id=credentials.client_id,
         client_secret=credentials.client_secret,
     ) as client:
-        await client.login()
+        await client.login(load_tokens=False, save_tokens=False)
         users = await client.fetch_users(logins=[username])
         if not users:
             raise ValueError(f"User not found: {username}")
@@ -253,6 +254,8 @@ class VizBot(commands.AutoBot):
         subs: list[eventsub.SubscriptionPayload],
         message_queue: asyncio.Queue["QueuedMessage"],
         credentials: TwitchCredentials,
+        adapter: AiohttpAdapter[Any],
+        scopes: Scopes,
         token_file: str | None = None,
     ) -> None:
         """Initialize the Twitch bot with EventSub subscriptions and message queue.
@@ -261,6 +264,9 @@ class VizBot(commands.AutoBot):
             bot_id: Twitch user ID of the bot account.
             subs: List of EventSub subscriptions to register at connection time.
             message_queue: Queue for dispatching events to the handler.
+            adapter: Web adapter serving the /oauth and /oauth/callback routes
+                that let additional broadcasters authorize the bot at runtime.
+            scopes: Default OAuth scopes for /oauth visits without ?scopes=.
             token_file: Path for twitchio's OAuth token store; None keeps the
                 twitchio default (.tio.tokens.json in the working directory).
         """
@@ -275,6 +281,8 @@ class VizBot(commands.AutoBot):
             prefix="!",
             subscriptions=subs,
             force_subscribe=True,
+            adapter=adapter,
+            scopes=scopes,
         )
 
     async def _get_avatar_url(self, chatter: object) -> str | None:
