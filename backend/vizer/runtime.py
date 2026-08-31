@@ -55,11 +55,22 @@ async def run(settings: Settings | None = None) -> None:
 
         # Tokens persisted from a previous run are loaded after the .env token
         # above, so refreshed tokens win over a possibly stale TWITCH_*_TOKEN.
-        await asyncio.gather(
-            bot.start(load_tokens=Path(settings.token_file).exists()),
-            server.serve(),
-            handler.process_queue(),
-        )
+        tasks = [
+            asyncio.create_task(
+                bot.start(load_tokens=Path(settings.token_file).exists())
+            ),
+            asyncio.create_task(server.serve()),
+            asyncio.create_task(handler.process_queue()),
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            # None of the three ever returns on its own, so reaching here means
+            # one failed or the run was cancelled; stop the siblings before the
+            # bot context manager tears the client down underneath them.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def main() -> None:
