@@ -28,15 +28,16 @@ from .handler import VisualEvent
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
-_SCENES_DIR = _STATIC_DIR / "scenes"
 
 
 class VizServer:
     """Starlette-based HTTP + WebSocket server for visual overlay delivery."""
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, static_dir: Path | None = None) -> None:
         self._host = host
         self._port = port
+        self._static_dir = static_dir or _STATIC_DIR
+        self._scenes_dir = self._static_dir / "scenes"
         # Plain set is fine — all access happens on the single asyncio thread.
         self._clients: set[WebSocket] = set()
         self._app = self._build_app()
@@ -47,8 +48,10 @@ class VizServer:
         async def index(request: Request) -> JSONResponse:
             # List subdirectory names under static/scenes/ as available scenes.
             scenes: list[str] = []
-            if _SCENES_DIR.exists():
-                scenes = sorted(p.name for p in _SCENES_DIR.iterdir() if p.is_dir())
+            if self._scenes_dir.exists():
+                scenes = sorted(
+                    p.name for p in self._scenes_dir.iterdir() if p.is_dir()
+                )
             return JSONResponse(
                 {"service": "twitch-vizer", "websocket": "/ws", "scenes": scenes}
             )
@@ -61,7 +64,7 @@ class VizServer:
             return RedirectResponse(url="/scenes/", status_code=301)
 
         async def scenes_index(request: Request) -> Response:
-            page = _SCENES_DIR / "index.html"
+            page = self._scenes_dir / "index.html"
             if not page.exists():
                 return Response("Scenes index not found", status_code=404)
             return FileResponse(page, headers={"Cache-Control": "no-store"})
@@ -69,8 +72,8 @@ class VizServer:
         async def scene_page(request: Request) -> Response:
             name = request.path_params["name"]
             # Resolve and guard against path traversal
-            page = (_SCENES_DIR / name / "index.html").resolve()
-            if not page.is_relative_to(_SCENES_DIR.resolve()):
+            page = (self._scenes_dir / name / "index.html").resolve()
+            if not page.is_relative_to(self._scenes_dir.resolve()):
                 return Response("Not found", status_code=404)
             if not page.exists():
                 return Response("Scene not found", status_code=404)
@@ -111,16 +114,18 @@ class VizServer:
             Route("/scenes/{name}/", scene_page),
             WebSocketRoute("/ws", ws_endpoint),
         ]
-        if _STATIC_DIR.exists():
-            routes.append(Mount("/static", StaticFiles(directory=_STATIC_DIR)))
+        if self._static_dir.exists():
+            routes.append(Mount("/static", StaticFiles(directory=self._static_dir)))
 
         return Starlette(routes=routes)
 
     async def broadcast(self, event: VisualEvent) -> None:
         """Send a visual event to all connected WebSocket clients.
 
-        Uses a snapshot of the client set to avoid mutation-during-iteration.
-        Stale clients are collected and removed after the iteration.
+        Sends run concurrently over a snapshot of the client set, so a client
+        that has stopped reading only delays the broadcast by its own send
+        instead of blocking every other overlay behind it. Clients whose send
+        raised are dropped once all sends have settled.
 
         Args:
             event: VisualEvent to serialize and broadcast.
