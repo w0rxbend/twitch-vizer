@@ -7,7 +7,9 @@ import {
   hashSeed,
   hslToRgb,
   OverlayEventSocket,
+  ParticleBurst,
   seedRng,
+  UserStyles,
 } from '../../shared/overlay';
 import type { VisualEventMsg } from '../../shared/overlay';
 import { createOverlayApp, makePixelTexture } from '../../shared/pixi';
@@ -15,32 +17,32 @@ import { ChatCard } from './card';
 import { makePalette, PX } from './palette';
 import type { Palette } from './palette';
 
-interface MovingParticle {
-  particle: PIXI.Particle;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-}
-
 const CARD_GAP = 10;
 const MAX_CARDS = 9;
-// Oldest color entries are evicted past this size so a busy always-on chat
-// does not grow the accent map without bound.
-const MAX_TRACKED_USERS = 500;
 
 class ChatOverlay {
   private app: PIXI.Application | null = null;
   private pixelTexture: PIXI.Texture | null = null;
   private cards: ChatCard[] = [];
-  private userAccents = new Map<string, number>();
-  private messageSerial = 0;
+  private readonly userStyles = new UserStyles({
+    scope: 'chat',
+    accent: (msg, seed) => colorFromString(msg.color, hslToRgb(seed % 360, 0.78, 0.58)),
+  });
   private readonly eventSocket = new OverlayEventSocket({
     label: 'ChatOverlay',
     onEvent: (msg) => this.spawn(msg),
+    onStatus: (status) => {
+      this.socketConnected = status === 'connected';
+      this.updateStatusDot();
+    },
   });
   private burstLayer: PIXI.ParticleContainer<PIXI.Particle> | null = null;
-  private burstParticles: MovingParticle[] = [];
+  private readonly burst = new ParticleBurst<PIXI.Particle>({
+    gravity: 0.055,
+    release: (particle) => this.burstLayer?.removeParticle(particle),
+  });
+  private statusDot: PIXI.Graphics | null = null;
+  private socketConnected = false;
 
   async init(): Promise<void> {
     const app = await createOverlayApp({
@@ -64,13 +66,28 @@ class ChatOverlay {
       },
     });
     app.stage.addChild(this.burstLayer);
-    app.ticker.add(({ deltaTime }) => this._tick(deltaTime));
+    app.ticker.add(({ deltaTime }) => this.tick(deltaTime));
 
     // Only existing cards' positions are updated on resize: their width was
     // baked in at spawn time and stays stale, which is acceptable because
     // every card expires within CARD_LIFETIME anyway.
-    window.addEventListener('resize', () => this._layoutCards());
-    this._seedPreview();
+    window.addEventListener('resize', () => {
+      this.layoutCards();
+      this.updateStatusDot();
+    });
+
+    // Debug-only connection indicator: a faint pixel square in the bottom-left
+    // corner while the event socket is down. Gated behind ?debug=1 (the same
+    // flag bootstrapOverlay uses for the spacebar test spawner) so it can never
+    // appear on the composited stream output.
+    if (new URLSearchParams(location.search).get('debug') === '1') {
+      this.statusDot = new PIXI.Graphics();
+      this.statusDot.rect(0, 0, PX * 2, PX * 2).fill({ color: 0xd8523f, alpha: 0.55 });
+      app.stage.addChild(this.statusDot);
+      this.updateStatusDot();
+    }
+
+    this.seedPreview();
   }
 
   connectWebSocket(): void {
@@ -79,21 +96,19 @@ class ChatOverlay {
 
   spawn(msg: VisualEventMsg): void {
     if (!this.app || !this.pixelTexture) return;
-    const userKey = this._userKey(msg.username);
-    const userSeed = msg.seed ?? hashSeed(userKey);
-    const userAccent = this._userAccent(msg, userKey, userSeed);
-    const mascotSeed = hashSeed(`mascot:${userKey}`);
-    const plateSeed = this._nextPlateSeed(msg, userKey, userSeed);
-    const palette = makePalette(plateSeed, userAccent);
-    const width = this._cardWidth();
+    const style = this.userStyles.for(msg);
+    const mascotSeed = hashSeed(`mascot:${style.key}`);
+    const plateSeed = this.userStyles.messageSeed(msg, style);
+    const palette = makePalette(plateSeed, style.accent);
+    const width = this.cardWidth();
     const card = new ChatCard(
       this.app,
       this.pixelTexture,
       msg,
       width,
       palette,
-      userSeed,
-      userAccent,
+      style.seed,
+      style.accent,
       mascotSeed,
       plateSeed,
     );
@@ -103,59 +118,33 @@ class ChatOverlay {
       this.cards.pop()?.destroy();
     }
 
-    this._layoutCards();
-    this._burst(card, palette, plateSeed);
+    this.layoutCards();
+    this.spawnBurst(card, palette, plateSeed);
   }
 
-  private _userKey(username: string): string {
-    return username.trim().toLowerCase() || 'anonymous';
+  private updateStatusDot(): void {
+    if (!this.statusDot || !this.app) return;
+    this.statusDot.visible = !this.socketConnected;
+    this.statusDot.x = PX * 2;
+    this.statusDot.y = this.app.screen.height - PX * 4;
   }
 
-  private _userAccent(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    const existing = this.userAccents.get(userKey);
-    if (existing !== undefined) return existing;
-
-    const fallbackHue = userSeed % 360;
-    const fallback = hslToRgb(fallbackHue, 0.78, 0.58);
-    const accent = colorFromString(msg.color, fallback);
-    if (this.userAccents.size >= MAX_TRACKED_USERS) {
-      const oldest = this.userAccents.keys().next().value;
-      if (oldest !== undefined) this.userAccents.delete(oldest);
-    }
-    this.userAccents.set(userKey, accent);
-    return accent;
-  }
-
-  private _nextPlateSeed(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    this.messageSerial += 1;
-    const randomBits = Math.floor(Math.random() * 0xffffffff);
-    return hashSeed([
-      userKey,
-      userSeed,
-      msg.event,
-      msg.text ?? '',
-      this.messageSerial,
-      performance.now().toFixed(3),
-      randomBits,
-    ].join(':'));
-  }
-
-  private _tick(delta: number): void {
-    const x = this._left();
+  private tick(delta: number): void {
+    const x = this.left();
     for (let i = this.cards.length - 1; i >= 0; i--) {
       if (this.cards[i].update(delta, x)) {
         this.cards[i].destroy();
         this.cards.splice(i, 1);
-        this._layoutCards();
+        this.layoutCards();
       }
     }
-    this._updateBurst(delta);
+    this.burst.update(delta);
   }
 
-  private _layoutCards(): void {
+  private layoutCards(): void {
     if (!this.app) return;
     let y = this.app.screen.height - 24;
-    const x = this._left();
+    const x = this.left();
     for (const card of this.cards) {
       y -= card.height;
       card.setTarget(x, y);
@@ -163,20 +152,20 @@ class ChatOverlay {
     }
   }
 
-  private _cardWidth(): number {
+  private cardWidth(): number {
     const screenW = this.app?.screen.width ?? window.innerWidth;
     return Math.round(clamp(screenW * 0.36, 420, 640) / PX) * PX;
   }
 
-  private _left(): number {
+  private left(): number {
     const screenW = this.app?.screen.width ?? window.innerWidth;
     return screenW < 700 ? 12 : 28;
   }
 
-  private _burst(card: ChatCard, palette: Palette, seed: number): void {
+  private spawnBurst(card: ChatCard, palette: Palette, seed: number): void {
     if (!this.pixelTexture || !this.burstLayer) return;
     const rng = seedRng(seed ^ 0x4c415345);
-    const x = this._left() + 28 + rng() * 120;
+    const x = this.left() + 28 + rng() * 120;
     const y = card.view.y + 14 + rng() * Math.max(42, card.height - 20);
     const colors = [palette.accent, palette.pop, palette.glow, palette.panel, palette.ink];
 
@@ -194,33 +183,15 @@ class ChatOverlay {
         alpha: 0.85,
       });
       this.burstLayer.addParticle(particle);
-      this.burstParticles.push({
-        particle,
+      this.burst.emit(particle, {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0,
         maxLife: 42 + rng() * 34,
       });
     }
   }
 
-  private _updateBurst(delta: number): void {
-    if (!this.burstLayer) return;
-    for (let i = this.burstParticles.length - 1; i >= 0; i--) {
-      const item = this.burstParticles[i];
-      item.life += delta;
-      item.particle.x += item.vx * delta;
-      item.particle.y += item.vy * delta;
-      item.vy += 0.055 * delta;
-      item.particle.alpha = clamp(1 - item.life / item.maxLife, 0, 1);
-      if (item.life >= item.maxLife) {
-        this.burstLayer.removeParticle(item.particle);
-        this.burstParticles.splice(i, 1);
-      }
-    }
-  }
-
-  private _seedPreview(): void {
+  private seedPreview(): void {
     const params = new URLSearchParams(location.search);
     if (params.get('preview') === '0') return;
     this.spawn({ event: 'chat_message', username: 'worxbend', text: 'Welcome!', color: '#ff9e88', seed: 1 });
@@ -228,21 +199,28 @@ class ChatOverlay {
 }
 
 const overlay = new ChatOverlay();
-const debugSpawner = new URLSearchParams(location.search).get('debug') === '1';
+// Each spacebar press cycles to the next synthetic event so every card
+// variant (chat plus system events, redemptions included) can be checked.
+const testEvents: Array<Partial<VisualEventMsg> & { event: VisualEventMsg['event'] }> = [
+  { event: 'chat_message', text: 'fresh chat signal rendered as pixel-card energy' },
+  { event: 'redemption', data: { reward: 'Hydrate!', cost: 500 } },
+  { event: 'redemption', data: { reward: 'Song Request', cost: 1000, input: 'play something synthy' } },
+  { event: 'follow' },
+  { event: 'sub', data: { months: 4 } },
+  { event: 'cheer', data: { bits: 300 } },
+  { event: 'raid', data: { viewers: 42 } },
+  { event: 'gift_sub', data: { total: 5 } },
+];
+let testEventIndex = 0;
 bootstrapOverlay(overlay, {
   label: 'ChatOverlay',
-  // The spacebar test spawner is opt-in via ?debug=1 so a stray keypress in
-  // an interactive OBS source cannot inject a fake chat card on stream.
-  onTestKey: debugSpawner
-    ? () => {
-        const seed = Math.floor(Math.random() * 0xffffff);
-        overlay.spawn({
-          event: 'chat_message',
-          username: `viewer${seed % 97}`,
-          text: 'fresh chat signal rendered as pixel-card energy',
-          color: `#${seed.toString(16).padStart(6, '0')}`,
-          seed,
-        });
-      }
-    : undefined,
+  onTestKey: () => {
+    const seed = Math.floor(Math.random() * 0xffffff);
+    overlay.spawn({
+      username: `viewer${seed % 97}`,
+      color: `#${seed.toString(16).padStart(6, '0')}`,
+      seed,
+      ...testEvents[testEventIndex++ % testEvents.length],
+    });
+  },
 });

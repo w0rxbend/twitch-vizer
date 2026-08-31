@@ -2,20 +2,28 @@ import * as PIXI from 'pixi.js';
 
 import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
+  approach,
   bootstrapOverlay,
   clamp,
   colorFromString,
   fillStyle,
   formatEventLabel,
   formatEventText,
-  hashSeed,
   hslToRgb,
   mixColor,
   OverlayEventSocket,
+  ParticleBurst,
+  renderParts,
   seedRng,
+  UserStyles,
 } from '../../shared/overlay';
 import type { EmoteItem, VisualEventMsg, VisualEventName } from '../../shared/overlay';
-import { createOverlayApp, loadAvatarImage, makePixelTexture } from '../../shared/pixi';
+import {
+  createOverlayApp,
+  loadAvatarImage,
+  makePixelTexture,
+  makeStaticParticleContainer,
+} from '../../shared/pixi';
 
 interface MatrixColumn {
   x: number;
@@ -24,14 +32,7 @@ interface MatrixColumn {
   chars: string[];
   length: number;
   phase: number;
-}
-
-interface DataSpark {
-  view: PIXI.Graphics;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
+  glyphs: PIXI.Text[];
 }
 
 const CARD_GAP = 10;
@@ -41,6 +42,9 @@ const CARD_LIFETIME = 32 * 60;
 const MAX_CARDS = 8;
 const FONT = '"Courier New", "Lucida Console", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
 const MATRIX_CHARS = '01#$%&*+-/<>{}[]ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+// Channel-points purple (#9147ff) pulled toward the terminal green so
+// redemption cards stand out without leaving the scene's palette.
+const REDEMPTION_ACCENT = mixColor(0x9147ff, 0x26ff63, 0.30);
 
 function messageText(msg: VisualEventMsg): string {
   return formatEventText(msg, 'joined the node');
@@ -51,30 +55,25 @@ function eventLabel(event: VisualEventName): string {
 }
 
 function terminalParts(msg: VisualEventMsg): { text: string; emotes: EmoteItem[] } {
-  const parts = msg.parts?.filter((part) => part.type === 'text' || part.type === 'image') ?? [];
   const emotes: EmoteItem[] = [];
-  if (parts.length > 0) {
-    const rendered = parts.map((part) => {
-      if (part.type === 'image') {
-        if (part.url || part.animatedUrl) {
-          emotes.push({
-            name: part.name ?? 'emote',
-            url: part.url ?? '',
-            animatedUrl: part.animatedUrl,
-            staticUrl: part.staticUrl,
-          });
-        }
-        return '';
+  let text = '';
+  // Emotes are drawn as a sprite strip below the message, so image parts
+  // contribute nothing to the typed-out text.
+  for (const part of renderParts(msg, messageText(msg))) {
+    if (part.type === 'image') {
+      if (part.url || part.animatedUrl) {
+        emotes.push({
+          name: part.name ?? 'emote',
+          url: part.url ?? '',
+          animatedUrl: part.animatedUrl,
+          staticUrl: part.staticUrl,
+        });
       }
-      return part.text ?? '';
-    }).join('');
-    return { text: rendered.trim() || messageText(msg), emotes };
+    } else {
+      text += part.text ?? '';
+    }
   }
-
-  return {
-    text: messageText(msg),
-    emotes: (msg.emotes ?? []).filter((emote) => emote.url),
-  };
+  return { text: text.trim() || messageText(msg), emotes };
 }
 
 class TerminalBackground {
@@ -83,7 +82,6 @@ class TerminalBackground {
   private readonly grid = new PIXI.Graphics();
   private readonly glyphLayer = new PIXI.Container();
   private columns: MatrixColumn[] = [];
-  private glyphs: PIXI.Text[] = [];
   private elapsed = 0;
 
   constructor() {
@@ -99,21 +97,22 @@ class TerminalBackground {
     for (const glyph of this.glyphLayer.removeChildren()) {
       glyph.destroy();
     }
-    this.glyphs = [];
 
     const colGap = 22;
     const rows = Math.ceil(height / 16) + 8;
     for (let x = 0; x < width + colGap; x += colGap) {
       const length = 7 + Math.floor(rng() * 18);
       const chars = Array.from({ length: rows }, () => MATRIX_CHARS[Math.floor(rng() * MATRIX_CHARS.length)]);
-      this.columns.push({
+      const column: MatrixColumn = {
         x,
         y: -rng() * height,
         speed: 0.35 + rng() * 1.25,
         chars,
         length,
         phase: rng() * 60,
-      });
+        glyphs: [],
+      };
+      this.columns.push(column);
       for (let i = 0; i < length; i++) {
         const glyph = new PIXI.Text({
           text: chars[i % chars.length],
@@ -128,37 +127,33 @@ class TerminalBackground {
         glyph.alpha = 0.18;
         glyph.x = x;
         this.glyphLayer.addChild(glyph);
-        this.glyphs.push(glyph);
+        column.glyphs.push(glyph);
       }
     }
 
     this.drawStatic(width, height);
   }
 
-  update(delta: number, width: number, height: number): void {
+  update(delta: number, height: number): void {
     this.elapsed += delta;
-    let glyphIndex = 0;
     for (const column of this.columns) {
       column.y += column.speed * delta;
       if (column.y > height + column.length * 18) {
         column.y = -column.length * 18;
       }
 
-      for (let i = 0; i < column.length; i++) {
-        const glyph = this.glyphs[glyphIndex++];
-        const y = column.y - i * 16;
+      column.glyphs.forEach((glyph, i) => {
         glyph.x = column.x + Math.sin((this.elapsed + column.phase + i) * 0.04) * 2;
-        glyph.y = y;
+        glyph.y = column.y - i * 16;
         glyph.alpha = clamp(0.07 + (1 - i / column.length) * 0.24, 0.04, 0.34);
         if ((Math.floor(this.elapsed + column.phase + i * 3) % 40) === 0) {
           glyph.text = MATRIX_CHARS[Math.floor(Math.random() * MATRIX_CHARS.length)];
         }
-      }
+      });
     }
 
     this.scanlines.alpha = 0.48 + Math.sin(this.elapsed * 0.10) * 0.08;
     this.grid.alpha = 0.22 + Math.sin(this.elapsed * 0.033) * 0.05;
-    this.view.visible = width > 0 && height > 0;
   }
 
   private drawStatic(width: number, height: number): void {
@@ -205,9 +200,9 @@ class HackerCard {
   private readonly charRate: number;
   private readonly width: number;
   private readonly seed: number;
+  private disposeAvatar?: () => void;
 
   constructor(
-    app: PIXI.Application,
     texture: PIXI.Texture,
     msg: VisualEventMsg,
     width: number,
@@ -269,7 +264,6 @@ class HackerCard {
     this.view.addChild(avatar);
     this.drawChrome();
     this.drawFrame(0);
-    app.stage.addChild(this.view);
   }
 
   setTarget(x: number, y: number): void {
@@ -298,7 +292,7 @@ class HackerCard {
     this.emoteLayer.scale.set(0.92 + emoteReveal * 0.08);
 
     this.view.x = x + jitter + Math.sin(this.age * 0.07 + this.seed) * 1.2;
-    this.view.y += (this.targetY - this.view.y) * 0.23 * delta;
+    this.view.y = approach(this.view.y, this.targetY, 0.23, delta);
     this.view.alpha = eased * leave;
     this.view.scale.set(0.98 + eased * 0.02 - (1 - leave) * 0.03);
 
@@ -309,6 +303,7 @@ class HackerCard {
 
   destroy(): void {
     this.view.destroy({ children: true });
+    this.disposeAvatar?.();
   }
 
   private formatCode(msg: VisualEventMsg, seed: number, body: string): string {
@@ -448,17 +443,7 @@ class HackerCard {
   ): PIXI.Container {
     const view = new PIXI.Container();
     const mask = new PIXI.Graphics().circle(16, 16, 15).fill(0xffffff);
-    const fallback = new PIXI.ParticleContainer<PIXI.Particle>({
-      texture,
-      roundPixels: true,
-      dynamicProperties: {
-        position: false,
-        vertex: false,
-        rotation: false,
-        uvs: false,
-        color: false,
-      },
-    });
+    const fallback = makeStaticParticleContainer(texture);
     const rng = seedRng(seed ^ 0x7091);
     const colors = [0x001804, 0x0bff51, 0x7eff99, userAccent, 0xd9ffe0];
     const particles: PIXI.Particle[] = [];
@@ -488,7 +473,7 @@ class HackerCard {
     view.addChild(this.makeAvatarFrame(userAccent));
 
     if (avatarUrl) {
-      loadAvatarImage(avatarUrl, view, fallback, {
+      this.disposeAvatar = loadAvatarImage(avatarUrl, view, fallback, {
         size: 30,
         offset: 1,
         mask,
@@ -570,14 +555,24 @@ class HackerChatOverlay {
   private pixelTexture: PIXI.Texture | null = null;
   private cards: HackerCard[] = [];
   private background: TerminalBackground | null = null;
-  private userAccents = new Map<string, number>();
-  private messageSerial = 0;
+  private readonly userStyles = new UserStyles({
+    scope: 'hacker',
+    accent: (msg, seed) => mixColor(
+      colorFromString(msg.color, hslToRgb(118 + (seed % 42), 0.92, 0.55)),
+      0x26ff63,
+      0.62,
+    ),
+  });
   private readonly eventSocket = new OverlayEventSocket({
     label: 'HackerChatOverlay',
     onEvent: (msg) => this.spawn(msg),
   });
   private sparkLayer: PIXI.Container | null = null;
-  private sparks: DataSpark[] = [];
+  private readonly sparks = new ParticleBurst<PIXI.Graphics>({
+    gravity: 0.018,
+    release: (view) => view.destroy(),
+  });
+  private resizeFrame = 0;
 
   async init(): Promise<void> {
     const app = await createOverlayApp({
@@ -595,9 +590,14 @@ class HackerChatOverlay {
     app.stage.addChild(this.sparkLayer);
     app.ticker.add(({ deltaTime }) => this.tick(deltaTime));
 
+    // A window drag fires resize continuously and every layout() rebuilds
+    // hundreds of Text objects, so relayout at most once per painted frame.
     window.addEventListener('resize', () => {
-      this.background?.layout(window.innerWidth, window.innerHeight);
-      this.layoutCards();
+      cancelAnimationFrame(this.resizeFrame);
+      this.resizeFrame = requestAnimationFrame(() => {
+        this.background?.layout(window.innerWidth, window.innerHeight);
+        this.layoutCards();
+      });
     });
     this.seedPreview();
   }
@@ -608,19 +608,18 @@ class HackerChatOverlay {
 
   spawn(msg: VisualEventMsg): void {
     if (!this.app || !this.pixelTexture) return;
-    const userKey = this.userKey(msg.username);
-    const userSeed = msg.seed ?? hashSeed(userKey);
-    const userAccent = this.userAccent(msg, userKey, userSeed);
-    const cardSeed = this.nextCardSeed(msg, userKey, userSeed);
+    const style = this.userStyles.for(msg);
+    const userAccent = msg.event === 'redemption' ? REDEMPTION_ACCENT : style.accent;
+    const cardSeed = this.userStyles.messageSeed(msg, style);
     const card = new HackerCard(
-      this.app,
       this.pixelTexture,
       msg,
       this.cardWidth(),
-      userSeed,
+      style.seed,
       userAccent,
       cardSeed,
     );
+    this.app.stage.addChild(card.view);
     this.cards.unshift(card);
 
     while (this.cards.length > MAX_CARDS) {
@@ -632,9 +631,8 @@ class HackerChatOverlay {
   }
 
   private tick(delta: number): void {
-    const width = this.app?.screen.width ?? window.innerWidth;
     const height = this.app?.screen.height ?? window.innerHeight;
-    this.background?.update(delta, width, height);
+    this.background?.update(delta, height);
 
     const x = this.left();
     for (let i = this.cards.length - 1; i >= 0; i--) {
@@ -644,7 +642,7 @@ class HackerChatOverlay {
         this.layoutCards();
       }
     }
-    this.updateSparks(delta);
+    this.sparks.update(delta);
   }
 
   private layoutCards(): void {
@@ -669,34 +667,6 @@ class HackerChatOverlay {
     return screenW < 720 ? 12 : 30;
   }
 
-  private userKey(username: string): string {
-    return username.trim().toLowerCase() || 'anonymous';
-  }
-
-  private userAccent(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    const existing = this.userAccents.get(userKey);
-    if (existing !== undefined) return existing;
-    const fallback = hslToRgb(118 + (userSeed % 42), 0.92, 0.55);
-    const raw = colorFromString(msg.color, fallback);
-    const accent = mixColor(raw, 0x26ff63, 0.62);
-    this.userAccents.set(userKey, accent);
-    return accent;
-  }
-
-  private nextCardSeed(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    this.messageSerial += 1;
-    return hashSeed([
-      'hacker',
-      userKey,
-      userSeed,
-      msg.event,
-      msg.text ?? '',
-      this.messageSerial,
-      performance.now().toFixed(3),
-      Math.random().toFixed(6),
-    ].join(':'));
-  }
-
   private spark(card: HackerCard, userAccent: number, seed: number): void {
     if (!this.sparkLayer) return;
     const rng = seedRng(seed ^ 0x5a5a);
@@ -711,28 +681,11 @@ class HackerChatOverlay {
       view.x = x;
       view.y = y;
       this.sparkLayer.addChild(view);
-      this.sparks.push({
-        view,
+      this.sparks.emit(view, {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0,
         maxLife: 28 + rng() * 34,
       });
-    }
-  }
-
-  private updateSparks(delta: number): void {
-    for (let i = this.sparks.length - 1; i >= 0; i--) {
-      const spark = this.sparks[i];
-      spark.life += delta;
-      spark.view.x += spark.vx * delta;
-      spark.view.y += spark.vy * delta;
-      spark.vy += 0.018 * delta;
-      spark.view.alpha = clamp(1 - spark.life / spark.maxLife, 0, 1);
-      if (spark.life >= spark.maxLife) {
-        spark.view.destroy();
-        this.sparks.splice(i, 1);
-      }
     }
   }
 
@@ -744,14 +697,21 @@ class HackerChatOverlay {
 }
 
 const overlay = new HackerChatOverlay();
+// Spacebar cycles through synthetic events so every card variant can be
+// inspected without a live backend.
+const TEST_EVENTS: Array<Pick<VisualEventMsg, 'event' | 'text' | 'data'>> = [
+  { event: 'chat_message', text: 'manual packet injected through keyboard' },
+  { event: 'redemption', data: { reward: 'Hydrate!', cost: 500, input: 'stay hydrated' } },
+  { event: 'redemption', data: { reward: 'First!', cost: 100 } },
+];
+let testEventIndex = 0;
 bootstrapOverlay(overlay, {
   label: 'HackerChatOverlay',
   onTestKey: () => {
     const seed = Math.floor(Math.random() * 0xffffff);
     overlay.spawn({
-      event: 'chat_message',
+      ...TEST_EVENTS[testEventIndex++ % TEST_EVENTS.length],
       username: `user${seed % 99}`,
-      text: 'manual packet injected through keyboard',
       color: `#${seed.toString(16).padStart(6, '0')}`,
       seed,
     });

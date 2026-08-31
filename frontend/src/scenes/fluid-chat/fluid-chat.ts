@@ -1,7 +1,7 @@
 import * as PIXI from 'pixi.js';
 
-import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
 import {
+  approach,
   bootstrapOverlay,
   clamp,
   colorFromString,
@@ -13,48 +13,23 @@ import {
   luminance,
   mixColor,
   OverlayEventSocket,
+  ParticleBurst,
   renderParts as renderMessageParts,
   seedRng,
+  UserStyles,
 } from '../../shared/overlay';
-import type { MessagePart, VisualEventMsg, VisualEventName } from '../../shared/overlay';
+import type { MessagePart, VisualEventMsg } from '../../shared/overlay';
+import { layoutMessageParts } from '../../shared/message-layout';
 import { createOverlayApp, loadAvatarImage } from '../../shared/pixi';
-
-interface FluidPalette {
-  deep: number;
-  skin: number;
-  skin2: number;
-  accent: number;
-  warm: number;
-  cool: number;
-  ink: number;
-  foam: number;
-}
-
-interface BlobPoint {
-  angle: number;
-  rx: number;
-  ry: number;
-  phase: number;
-  speed: number;
-  amp: number;
-}
-
-interface BlobParticle {
-  view: PIXI.Graphics;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-  radius: number;
-  color: number;
-}
+import { BlobMascot } from './blob-mascot';
+import { WobblyBlob } from './blob';
+import type { FluidPalette } from './blob';
 
 const CARD_GAP = 13;
 // Ages and lifetimes throughout this scene are in PIXI ticker deltaTime units,
 // i.e. frames at the 60fps reference rate: 30 * 60 frames ~= 30 seconds.
 const CARD_LIFETIME_FRAMES = 30 * 60;
 const MAX_CARDS = 7;
-const TAU = Math.PI * 2;
 
 function makePalette(seed: number, userAccent: number): FluidPalette {
   const rng = seedRng(seed ^ 0xb10bd00d);
@@ -88,284 +63,6 @@ function renderParts(msg: VisualEventMsg): MessagePart[] {
   return renderMessageParts(msg, messageText(msg));
 }
 
-function eventLabel(event: VisualEventName): string {
-  return formatEventLabel(event);
-}
-
-function smoothClosedBlob(
-  g: PIXI.Graphics,
-  points: { x: number; y: number }[],
-  fill: number | { color: number; alpha: number },
-  stroke?: { color: number; alpha: number; width: number },
-): void {
-  if (points.length < 3) return;
-  g.moveTo(points[0].x, points[0].y);
-  for (let i = 0; i < points.length; i++) {
-    const current = points[i];
-    const next = points[(i + 1) % points.length];
-    const previous = points[(i - 1 + points.length) % points.length];
-    const afterNext = points[(i + 2) % points.length];
-    const cp1x = current.x + (next.x - previous.x) / 6;
-    const cp1y = current.y + (next.y - previous.y) / 6;
-    const cp2x = next.x - (afterNext.x - current.x) / 6;
-    const cp2y = next.y - (afterNext.y - current.y) / 6;
-    g.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, next.x, next.y);
-  }
-  g.closePath().fill(fill);
-  if (stroke) g.stroke(stroke);
-}
-
-class WobblyBlob {
-  readonly view = new PIXI.Graphics();
-  private readonly points: BlobPoint[];
-  private readonly seed: number;
-  private elapsed = 0;
-
-  constructor(
-    private readonly width: number,
-    private readonly height: number,
-    private readonly palette: FluidPalette,
-    seed: number,
-  ) {
-    this.seed = seed;
-    const rng = seedRng(seed ^ 0x5f17b10b);
-    const count = 15 + Math.floor(rng() * 5);
-    this.points = Array.from({ length: count }, (_, index) => {
-      const angle = (index / count) * TAU;
-      return {
-        angle,
-        rx: 0.86 + rng() * 0.24,
-        ry: 0.80 + rng() * 0.28,
-        phase: rng() * TAU,
-        speed: 0.010 + rng() * 0.018,
-        amp: 6 + rng() * 11,
-      };
-    });
-    this.draw(0);
-  }
-
-  update(delta: number): void {
-    this.elapsed += delta;
-    this.draw(this.elapsed);
-  }
-
-  private draw(time: number): void {
-    const g = this.view;
-    const w = this.width;
-    const h = this.height;
-    const cx = w * 0.52;
-    const cy = h * 0.50;
-    const rx = w * 0.48;
-    const ry = h * 0.48;
-    const liquid = this.points.map((point) => {
-      const wobble = Math.sin(time * point.speed + point.phase) * point.amp
-        + Math.sin(time * point.speed * 0.62 + point.phase * 1.7) * point.amp * 0.45;
-      return {
-        x: cx + Math.cos(point.angle) * (rx * point.rx + wobble),
-        y: cy + Math.sin(point.angle) * (ry * point.ry + wobble * 0.72),
-      };
-    });
-    const rng = seedRng(this.seed ^ 0xca7d);
-
-    g.clear();
-    smoothClosedBlob(g, liquid, fillStyle(0x030409, 0.36));
-
-    const shadow = liquid.map((p) => ({ x: p.x + 8, y: p.y + 10 }));
-    smoothClosedBlob(g, shadow, fillStyle(0x000000, 0.20));
-    smoothClosedBlob(g, liquid, fillStyle(this.palette.deep, 0.88), {
-      color: mixColor(this.palette.foam, this.palette.accent, 0.2),
-      alpha: 0.40,
-      width: 2,
-    });
-
-    for (let i = 0; i < 5; i++) {
-      const lx = w * (0.16 + rng() * 0.70) + Math.sin(time * 0.013 + i) * 9;
-      const ly = h * (0.18 + rng() * 0.56) + Math.cos(time * 0.011 + i * 1.8) * 6;
-      g.ellipse(lx, ly, 42 + rng() * 82, 10 + rng() * 28)
-        .fill(fillStyle(i % 2 ? this.palette.skin : this.palette.skin2, 0.17 + rng() * 0.18));
-    }
-
-    g.ellipse(w * 0.30 + Math.sin(time * 0.018) * 8, h * 0.18, w * 0.24, 18)
-      .fill(fillStyle(this.palette.foam, 0.16));
-    g.circle(w * 0.86, h * 0.22 + Math.sin(time * 0.02) * 4, 8)
-      .fill(fillStyle(this.palette.warm, 0.50));
-    g.circle(w * 0.91, h * 0.58 + Math.cos(time * 0.016) * 4, 5)
-      .fill(fillStyle(this.palette.cool, 0.48));
-  }
-}
-
-class BlobMascot {
-  readonly view = new PIXI.Container();
-  private readonly body = new PIXI.Graphics();
-  private readonly face = new PIXI.Graphics();
-  private readonly points: BlobPoint[];
-  private readonly profile: {
-    eye: number;
-    mouth: number;
-    horns: number;
-    limbs: number;
-    spots: number;
-    body: number;
-    shade: number;
-    accent: number;
-  };
-  private elapsed = 0;
-
-  constructor(
-    private readonly palette: FluidPalette,
-    userColor: number,
-    seed: number,
-  ) {
-    const rng = seedRng(seed ^ 0xa11faced);
-    this.profile = {
-      eye: seed % 6,
-      mouth: Math.floor(seed / 17) % 5,
-      horns: Math.floor(seed / 43) % 5,
-      limbs: Math.floor(seed / 89) % 4,
-      spots: Math.floor(seed / 131) % 7,
-      body: mixColor(userColor, [palette.skin, palette.skin2, palette.warm, palette.cool][seed % 4], 0.46),
-      shade: mixColor(userColor, palette.deep, 0.45),
-      accent: [palette.warm, palette.cool, palette.foam, palette.accent][Math.floor(seed / 7) % 4],
-    };
-    const count = 12 + Math.floor(rng() * 4);
-    this.points = Array.from({ length: count }, (_, index) => ({
-      angle: (index / count) * TAU,
-      rx: 0.78 + rng() * 0.30,
-      ry: 0.78 + rng() * 0.32,
-      phase: rng() * TAU,
-      speed: 0.018 + rng() * 0.028,
-      amp: 2.8 + rng() * 4.6,
-    }));
-
-    this.view.addChild(this.body);
-    this.view.addChild(this.face);
-    this.draw();
-  }
-
-  update(delta: number): void {
-    this.elapsed += delta;
-    this.view.rotation = Math.sin(this.elapsed * 0.022) * 0.04;
-    this.view.y += Math.sin(this.elapsed * 0.035) * 0.016 * delta;
-    this.draw();
-  }
-
-  private draw(): void {
-    const g = this.body;
-    const f = this.face;
-    const time = this.elapsed;
-    const cx = 29;
-    const cy = 29;
-    const rx = 25;
-    const ry = 23;
-    const points = this.points.map((point) => {
-      const wobble = Math.sin(time * point.speed + point.phase) * point.amp;
-      return {
-        x: cx + Math.cos(point.angle) * (rx * point.rx + wobble),
-        y: cy + Math.sin(point.angle) * (ry * point.ry + wobble * 0.75),
-      };
-    });
-
-    g.clear();
-    f.clear();
-    g.ellipse(31, 55, 23, 5).fill(fillStyle(0x000000, 0.20));
-
-    this.drawAppendages(g, time);
-    smoothClosedBlob(g, points, fillStyle(this.profile.body, 0.98), {
-      color: mixColor(this.profile.shade, 0x04040a, 0.24),
-      alpha: 0.86,
-      width: 4,
-    });
-    g.ellipse(19 + Math.sin(time * 0.025) * 2, 17, 12, 5)
-      .fill(fillStyle(mixColor(this.profile.body, 0xffffff, 0.42), 0.50));
-
-    for (let i = 0; i < this.profile.spots; i++) {
-      const angle = i * 1.73 + this.profile.eye;
-      const x = 30 + Math.cos(angle) * (8 + (i % 3) * 4);
-      const y = 30 + Math.sin(angle * 1.2) * 10;
-      g.circle(x, y, 2.4 + (i % 2) * 1.6).fill(fillStyle(this.profile.accent, 0.40));
-    }
-
-    this.drawFace(f, time);
-  }
-
-  private drawAppendages(g: PIXI.Graphics, time: number): void {
-    if (this.profile.horns === 1 || this.profile.horns === 3) {
-      g.moveTo(15, 13).quadraticCurveTo(14, -2, 25, 10).quadraticCurveTo(21, 13, 15, 13).fill(fillStyle(this.profile.accent, 0.94));
-      g.moveTo(40, 12).quadraticCurveTo(45, -1, 49, 15).quadraticCurveTo(45, 13, 40, 12).fill(fillStyle(this.profile.accent, 0.94));
-    } else if (this.profile.horns === 2) {
-      g.circle(19, 9, 5).fill(fillStyle(this.profile.accent, 0.92));
-      g.circle(42, 9, 5).fill(fillStyle(this.profile.accent, 0.92));
-    } else if (this.profile.horns === 4) {
-      g.moveTo(25, 8).quadraticCurveTo(31, -4, 36, 9).fill(fillStyle(this.profile.accent, 0.92));
-    }
-
-    if (this.profile.limbs > 0) {
-      const sway = Math.sin(time * 0.04) * 3;
-      g.ellipse(7, 33 + sway, 8, 4).fill(fillStyle(this.profile.shade, 0.96));
-      g.ellipse(52, 34 - sway, 8, 4).fill(fillStyle(this.profile.shade, 0.96));
-      if (this.profile.limbs > 1) {
-        g.ellipse(22, 52, 5, 7).fill(fillStyle(this.profile.shade, 0.96));
-        g.ellipse(39, 52, 5, 7).fill(fillStyle(this.profile.shade, 0.96));
-      }
-    }
-  }
-
-  private drawFace(g: PIXI.Graphics, time: number): void {
-    const blink = Math.sin(time * 0.035 + this.profile.eye) > 0.965;
-    const eyeColor = this.profile.eye % 2 ? this.palette.foam : 0xffffff;
-    const pupil = 0x080a11;
-    const y = this.profile.eye === 4 ? 25 : 24;
-
-    if (this.profile.eye === 2) {
-      this.eye(g, 24, 22, blink, eyeColor, pupil, 5);
-      this.eye(g, 35, 27, blink, eyeColor, pupil, 4);
-    } else if (this.profile.eye === 3) {
-      this.eye(g, 30, 22, blink, eyeColor, pupil, 7);
-    } else if (this.profile.eye === 5) {
-      this.eye(g, 21, 23, blink, eyeColor, pupil, 4);
-      this.eye(g, 31, 21, blink, eyeColor, pupil, 4);
-      this.eye(g, 41, 23, blink, eyeColor, pupil, 4);
-    } else {
-      this.eye(g, 22, y, blink, eyeColor, pupil, 5);
-      this.eye(g, 38, y, blink, eyeColor, pupil, 5);
-    }
-
-    const mouthY = 36;
-    if (this.profile.mouth === 0) {
-      g.roundRect(24, mouthY, 15, 8, 4).fill(fillStyle(0x130910, 0.92));
-      g.circle(29, mouthY + 6, 3).fill(fillStyle(0xff7695, 0.88));
-    } else if (this.profile.mouth === 1) {
-      g.moveTo(24, mouthY).quadraticCurveTo(31, mouthY + 8, 39, mouthY).stroke({ color: 0x130910, width: 3, alpha: 0.9 });
-    } else if (this.profile.mouth === 2) {
-      g.roundRect(24, mouthY, 15, 4, 2).fill(fillStyle(0x130910, 0.92));
-      g.rect(28, mouthY, 3, 4).fill(fillStyle(0xfff4c8, 0.95));
-      g.rect(34, mouthY, 3, 4).fill(fillStyle(0xfff4c8, 0.95));
-    } else if (this.profile.mouth === 3) {
-      g.circle(31, mouthY + 2, 5).fill(fillStyle(0x130910, 0.92));
-    } else {
-      g.moveTo(25, mouthY + 2).quadraticCurveTo(31, mouthY - 2, 37, mouthY + 2).stroke({ color: 0x130910, width: 3, alpha: 0.9 });
-    }
-  }
-
-  private eye(
-    g: PIXI.Graphics,
-    x: number,
-    y: number,
-    blink: boolean,
-    eyeColor: number,
-    pupil: number,
-    radius: number,
-  ): void {
-    if (blink) {
-      g.roundRect(x - radius, y - 1, radius * 2, 3, 2).fill(fillStyle(pupil, 0.9));
-      return;
-    }
-    g.circle(x, y, radius).fill(fillStyle(eyeColor, 0.98));
-    g.circle(x + radius * 0.22, y + radius * 0.18, Math.max(2, radius * 0.42)).fill(pupil);
-    g.circle(x - radius * 0.25, y - radius * 0.24, Math.max(1, radius * 0.18)).fill(fillStyle(0xffffff, 0.72));
-  }
-}
-
 // Horizontal card layout: [mascot slot | text column | avatar], with the text
 // column wrapping just short of the avatar. All values in px.
 const CARD_LAYOUT = {
@@ -390,6 +87,7 @@ class ChatCard {
   private positioned = false;
   private readonly blob: WobblyBlob;
   private readonly mascot: BlobMascot;
+  private disposeAvatar?: () => void;
 
   constructor(
     msg: VisualEventMsg,
@@ -452,7 +150,7 @@ class ChatCard {
 
   private makeTagText(msg: VisualEventMsg, palette: FluidPalette): PIXI.Text {
     return new PIXI.Text({
-      text: eventLabel(msg.event),
+      text: formatEventLabel(msg.event),
       style: {
         fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif',
         fontSize: 11,
@@ -481,8 +179,8 @@ class ChatCard {
     const eased = 1 - Math.pow(1 - enter, 3);
     const wobble = Math.sin(this.age * 0.032) * 2.5;
 
-    this.view.x += (x + wobble - this.view.x) * 0.22 * delta;
-    this.view.y += (this.targetY - this.view.y) * 0.18 * delta;
+    this.view.x = approach(this.view.x, x + wobble, 0.22, delta);
+    this.view.y = approach(this.view.y, this.targetY, 0.18, delta);
     this.view.alpha = eased * leave;
     this.view.scale.set(0.96 + eased * 0.04 - (1 - leave) * 0.05);
     this.blob.update(delta);
@@ -492,98 +190,39 @@ class ChatCard {
 
   destroy(): void {
     this.view.destroy({ children: true });
+    this.disposeAvatar?.();
   }
 
   private makeMessageContent(msg: VisualEventMsg, palette: FluidPalette, wrap: number): PIXI.Container {
-    const content = new PIXI.Container();
-    const style = {
-      fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif',
-      fontSize: 18,
-      fontWeight: '800' as const,
-      fill: 0xffffff,
-      lineHeight: 25,
-      letterSpacing: 0,
-      stroke: { color: 0x04050b, width: 3 },
-      dropShadow: { color: 0x000000, alpha: 0.28, distance: 1, blur: 3 },
-    };
-    const imageSize = 25;
-    const gap = 5;
-    const lineHeight = 26;
-    let x = 0;
-    let y = 0;
-    let hasContent = false;
-
-    const newline = () => {
-      x = 0;
-      y += lineHeight;
-    };
-
-    const place = (node: PIXI.Container | PIXI.Text, width: number, height = lineHeight) => {
-      if (x > 0 && x + width > wrap) newline();
-      node.x = x;
-      node.y = y + Math.max(0, Math.floor((lineHeight - height) / 2));
-      content.addChild(node);
-      x += width + gap;
-      hasContent = true;
-    };
-
-    const addText = (text: string) => {
-      for (const chunk of text.match(/\S+\s*|\s+/g) ?? []) {
-        if (!chunk.trim()) {
-          x = Math.min(wrap, x + 8);
-          continue;
-        }
-        const label = new PIXI.Text({ text: chunk, style });
-        if (label.width > wrap) label.scale.x = wrap / label.width;
-        place(label, Math.min(label.width, wrap), label.height);
-      }
-    };
-
-    const addImage = (part: MessagePart) => {
-      if (!part.url && !part.animatedUrl) return;
-      const holder = new PIXI.Container();
-      const backing = new PIXI.Graphics()
-        .circle(imageSize / 2, imageSize / 2, imageSize / 2)
+    return layoutMessageParts(renderParts(msg), {
+      wrap,
+      textStyle: {
+        fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif',
+        fontSize: 18,
+        fontWeight: '800',
+        fill: 0xffffff,
+        lineHeight: 25,
+        letterSpacing: 0,
+        stroke: { color: 0x04050b, width: 3 },
+        dropShadow: { color: 0x000000, alpha: 0.28, distance: 1, blur: 3 },
+      },
+      imageSize: 25,
+      gap: 5,
+      lineHeight: 26,
+      imageInset: 3,
+      makeImageBacking: (size) => new PIXI.Graphics()
+        .circle(size / 2, size / 2, size / 2)
         .fill(fillStyle(palette.foam, 0.18))
-        .stroke({ color: palette.foam, width: 1.5, alpha: 0.42 });
-      holder.addChild(backing);
-      this.loadInlineImage(part, holder, imageSize);
-      place(holder, imageSize, imageSize);
-    };
-
-    for (const part of renderParts(msg)) {
-      if (part.type === 'image') addImage(part);
-      else addText(part.text ?? '');
-    }
-
-    if (!hasContent) addText(messageText(msg));
-    return content;
-  }
-
-  private loadInlineImage(part: MessagePart, holder: PIXI.Container, size: number): void {
-    loadEmoteDisplay(part)
-      .then((sprite) => {
-        if (holder.destroyed) return;
-        fitDisplayObject(sprite, size - 3);
-        sprite.x += 1;
-        sprite.y += 1;
-        holder.addChild(sprite);
-      })
-      .catch(() => {
-        const fallback = new PIXI.Text({
-          text: '?',
-          style: {
-            fontFamily: '"Trebuchet MS", sans-serif',
-            fontSize: 14,
-            fontWeight: '900',
-            fill: 0xffffff,
-            letterSpacing: 0,
-          },
-        });
-        fallback.x = Math.round((size - fallback.width) / 2);
-        fallback.y = Math.round((size - fallback.height) / 2);
-        holder.addChild(fallback);
-      });
+        .stroke({ color: palette.foam, width: 1.5, alpha: 0.42 }),
+      fallbackTextStyle: {
+        fontFamily: '"Trebuchet MS", sans-serif',
+        fontSize: 14,
+        fontWeight: '900',
+        fill: 0xffffff,
+        letterSpacing: 0,
+      },
+      emptyText: messageText(msg),
+    });
   }
 
   private makeAvatar(
@@ -603,7 +242,7 @@ class ChatCard {
     view.addChild(ring);
 
     if (avatarUrl) {
-      loadAvatarImage(avatarUrl, view, fallback, {
+      this.disposeAvatar = loadAvatarImage(avatarUrl, view, fallback, {
         size: CARD_LAYOUT.avatarSize,
         addAtIndex: 1,
         roundPixels: false,
@@ -627,15 +266,20 @@ class ChatCard {
 class FluidChatOverlay {
   private app: PIXI.Application | null = null;
   private cards: ChatCard[] = [];
-  private userAccents = new Map<string, number>();
-  private userMascotSeeds = new Map<string, number>();
-  private messageSerial = 0;
+  private readonly userStyles = new UserStyles({
+    scope: 'fluid',
+    accent: (msg, seed) => colorFromString(msg.color, hslToRgb(seed % 360, 0.72, 0.60)),
+  });
   private readonly eventSocket = new OverlayEventSocket({
     label: 'FluidChatOverlay',
     onEvent: (msg) => this.spawn(msg),
   });
   private burstLayer: PIXI.Container | null = null;
-  private burstParticles: BlobParticle[] = [];
+  private readonly burstPool = new ParticleBurst<PIXI.Graphics>({
+    gravity: 0.030,
+    release: (view) => view.destroy(),
+    onUpdate: (item, remaining) => item.body.scale.set(0.70 + (1 - remaining) * 1.15),
+  });
 
   async init(): Promise<void> {
     const app = await createOverlayApp({ antialias: true });
@@ -655,20 +299,17 @@ class FluidChatOverlay {
 
   spawn(msg: VisualEventMsg): void {
     if (!this.app) return;
-    const userKey = this.userKey(msg.username);
-    const userSeed = msg.seed ?? hashSeed(userKey);
-    const userAccent = this.userAccent(msg, userKey, userSeed);
-    const mascotSeed = this.mascotSeed(userKey);
-    const plateSeed = this.nextPlateSeed(msg, userKey, userSeed);
-    const palette = makePalette(plateSeed, userAccent);
+    const style = this.userStyles.for(msg);
+    const plateSeed = this.userStyles.messageSeed(msg, style);
+    const palette = makePalette(plateSeed, style.accent);
     const width = this.cardWidth();
     const card = new ChatCard(
       msg,
       width,
       palette,
-      userSeed,
-      userAccent,
-      mascotSeed,
+      style.seed,
+      style.accent,
+      hashSeed(`fluid-mascot:${style.key}`),
       plateSeed,
     );
     this.app.stage.addChild(card.view);
@@ -691,7 +332,7 @@ class FluidChatOverlay {
         this.layoutCards();
       }
     }
-    this.updateBurst(delta);
+    this.burstPool.update(delta);
   }
 
   private layoutCards(): void {
@@ -716,42 +357,6 @@ class FluidChatOverlay {
     return screenW < 720 ? 12 : 30;
   }
 
-  private userKey(username: string): string {
-    return username.trim().toLowerCase() || 'anonymous';
-  }
-
-  private userAccent(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    const existing = this.userAccents.get(userKey);
-    if (existing !== undefined) return existing;
-    const fallback = hslToRgb(userSeed % 360, 0.72, 0.60);
-    const accent = colorFromString(msg.color, fallback);
-    this.userAccents.set(userKey, accent);
-    return accent;
-  }
-
-  private mascotSeed(userKey: string): number {
-    const existing = this.userMascotSeeds.get(userKey);
-    if (existing !== undefined) return existing;
-    const seed = hashSeed(`fluid-mascot:${userKey}`);
-    this.userMascotSeeds.set(userKey, seed);
-    return seed;
-  }
-
-  private nextPlateSeed(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    this.messageSerial += 1;
-    const randomBits = Math.floor(Math.random() * 0xffffffff);
-    return hashSeed([
-      'fluid',
-      userKey,
-      userSeed,
-      msg.event,
-      msg.text ?? '',
-      this.messageSerial,
-      performance.now().toFixed(3),
-      randomBits,
-    ].join(':'));
-  }
-
   private burst(card: ChatCard, palette: FluidPalette, seed: number): void {
     if (!this.burstLayer) return;
     const rng = seedRng(seed ^ 0x57e11a);
@@ -770,32 +375,11 @@ class FluidChatOverlay {
       view.x = x;
       view.y = y;
       this.burstLayer.addChild(view);
-      this.burstParticles.push({
-        view,
+      this.burstPool.emit(view, {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0,
         maxLife: 48 + rng() * 44,
-        radius,
-        color,
       });
-    }
-  }
-
-  private updateBurst(delta: number): void {
-    for (let i = this.burstParticles.length - 1; i >= 0; i--) {
-      const item = this.burstParticles[i];
-      item.life += delta;
-      item.view.x += item.vx * delta;
-      item.view.y += item.vy * delta;
-      item.vy += 0.030 * delta;
-      const life = clamp(1 - item.life / item.maxLife, 0, 1);
-      item.view.alpha = life;
-      item.view.scale.set(0.70 + (1 - life) * 1.15);
-      if (item.life >= item.maxLife) {
-        item.view.destroy();
-        this.burstParticles.splice(i, 1);
-      }
     }
   }
 
@@ -807,14 +391,29 @@ class FluidChatOverlay {
 }
 
 const overlay = new FluidChatOverlay();
+
+// Spacebar test events cycle through every event shape the scene can receive,
+// so each press exercises a different card layout.
+const TEST_EVENTS: Array<Pick<VisualEventMsg, 'event' | 'text' | 'data'>> = [
+  { event: 'chat_message', text: 'fresh chat rendered as soft-body blob motion' },
+  { event: 'follow' },
+  { event: 'sub', data: { months: 7 } },
+  { event: 'cheer', data: { bits: 500 } },
+  { event: 'raid', data: { viewers: 42 } },
+  { event: 'gift_sub', data: { total: 5 } },
+  { event: 'redemption', data: { reward: 'Hydrate!', cost: 250, input: 'stay moist' } },
+];
+let testEventIndex = 0;
+
 bootstrapOverlay(overlay, {
   label: 'FluidChatOverlay',
   onTestKey: () => {
     const seed = Math.floor(Math.random() * 0xffffff);
+    const base = TEST_EVENTS[testEventIndex % TEST_EVENTS.length];
+    testEventIndex += 1;
     overlay.spawn({
-      event: 'chat_message',
+      ...base,
       username: `viewer${seed % 97}`,
-      text: 'fresh chat rendered as soft-body blob motion',
       color: `#${seed.toString(16).padStart(6, '0')}`,
       seed,
     });

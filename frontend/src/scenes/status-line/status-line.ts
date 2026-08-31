@@ -41,10 +41,13 @@ interface TickerItem {
 }
 
 const DEFAULT_HEIGHT = 108;
-// Ticker text sits this far above the bottom edge: a fraction of the bar
-// height, but never closer than the minimum inset.
+// Ticker text sits this far above the bottom edge: TICKER_BASELINE_RATIO of the
+// bar height, but never closer than TICKER_MIN_INSET pixels. See tickerBaselineY().
 const TICKER_MIN_INSET = 32;
 const TICKER_BASELINE_RATIO = 0.42;
+// New ticker items queue up off-screen to the right, so a chat flood on a
+// long-running source could otherwise grow the queue without bound.
+const MAX_TICKER_ITEMS = 24;
 const TAU = Math.PI * 2;
 const RAZER_GREEN = 0x54f044;
 const TOXIC_GREEN = 0x38ff24;
@@ -52,16 +55,67 @@ const ACID_GREEN = 0x8cff68;
 const DEEP_GREEN = 0x020802;
 const LIQUID_BLACK = 0x000000;
 const TOXIC_VIOLET = 0xb000ff;
-const DARK_VIOLET = 0x250034;
 
 interface WaveLayerSpec {
-  yOffset: number;
+  /** Distance below the crest, as a fraction of the configured bar height. */
+  yOffsetRatio: number;
   amplitudeScale: number;
   frequency: number;
   speed: number;
   phase: number;
   color: number;
   alpha: number;
+}
+
+const WAVE_LAYERS: readonly WaveLayerSpec[] = [
+  {
+    yOffsetRatio: 0.30,
+    amplitudeScale: 0.32,
+    frequency: 1.45,
+    speed: 0.032,
+    phase: 1.7,
+    color: mixColor(LIQUID_BLACK, DEEP_GREEN, 0.62),
+    alpha: 1,
+  },
+  {
+    yOffsetRatio: 0.20,
+    amplitudeScale: 0.42,
+    frequency: 1.90,
+    speed: -0.040,
+    phase: 4.2,
+    color: mixColor(DEEP_GREEN, RAZER_GREEN, 0.58),
+    alpha: 0.96,
+  },
+  {
+    yOffsetRatio: 0.11,
+    amplitudeScale: 0.55,
+    frequency: 2.55,
+    speed: 0.052,
+    phase: 2.4,
+    color: mixColor(TOXIC_GREEN, ACID_GREEN, 0.36),
+    alpha: 0.90,
+  },
+];
+
+const LANE_STYLES: readonly { color: number; alpha: number; width: number }[] = [
+  { color: mixColor(ACID_GREEN, TOXIC_GREEN, 0.48), alpha: 0.28, width: 3 },
+  { color: mixColor(ACID_GREEN, TOXIC_GREEN, 0.52), alpha: 0.195, width: 2 },
+  { color: mixColor(RAZER_GREEN, ACID_GREEN, 0.42), alpha: 0.23, width: 2 },
+];
+
+/** Geometry shared by every pass of the wave bar, computed once per frame. */
+interface WaveGeometry {
+  width: number;
+  height: number;
+  barHeight: number;
+  baseY: number;
+  crest: number;
+  amp: number;
+  step: number;
+  active: number;
+  time: number;
+  deep: number;
+  bright: number;
 }
 
 function readConfig(): StatusConfig {
@@ -87,7 +141,10 @@ function eventTickerText(msg: VisualEventMsg): string {
 function readableAccent(msg: VisualEventMsg): number {
   const seed = msg.seed ?? hashSeed(`${msg.username}:${msg.event}`);
   const base = colorFromString(msg.color, hslToRgb(seed % 360, 0.76, 0.58));
-  const toxicBase = seed % 3 === 0 ? TOXIC_VIOLET : seed % 3 === 1 ? TOXIC_GREEN : ACID_GREEN;
+  // Redemptions always pulse violet — the channel-points color of this palette.
+  const toxicBase = msg.event === 'redemption'
+    ? TOXIC_VIOLET
+    : seed % 3 === 0 ? TOXIC_VIOLET : seed % 3 === 1 ? TOXIC_GREEN : ACID_GREEN;
   return mixColor(toxicBase, base, 0.22);
 }
 
@@ -163,7 +220,7 @@ function makeTickerItem(msg: VisualEventMsg): PIXI.Container {
 
   if (msg.event === 'chat_message') {
     cursor = appendTickerText(container, `${msg.username}: `, cursor);
-    for (const part of renderParts(msg)) {
+    for (const part of renderParts(msg, formatEventText(msg, 'joined the stream'))) {
       if (part.type === 'image') {
         cursor = appendTickerImage(container, part, cursor);
       } else {
@@ -183,10 +240,9 @@ function makeTickerItem(msg: VisualEventMsg): PIXI.Container {
 }
 
 class StatusLineOverlay {
-  private readonly config = readConfig();
   private readonly wave = new PIXI.Graphics();
   private readonly glow = new PIXI.Graphics();
-  private readonly ripplesLayer = new PIXI.Container();
+  private readonly ripplesLayer = new PIXI.Graphics();
   private readonly textMask = new PIXI.Graphics();
   private readonly textLayer = new PIXI.Container();
   private readonly eventSocket = new OverlayEventSocket({
@@ -206,6 +262,8 @@ class StatusLineOverlay {
   private tickerItems: TickerItem[] = [];
   private ripples: Ripple[] = [];
   private debugText: PIXI.Text | null = null;
+
+  constructor(private readonly config: StatusConfig) {}
 
   async init(): Promise<void> {
     const app = await createOverlayApp({
@@ -246,6 +304,11 @@ class StatusLineOverlay {
 
   connectWebSocket(): void {
     this.eventSocket.connect();
+  }
+
+  /** Feeds a synthetic event through the same path as WebSocket messages. */
+  receiveTestEvent(msg: VisualEventMsg): void {
+    this.receive(msg);
   }
 
   private receive(msg: VisualEventMsg): void {
@@ -313,6 +376,12 @@ class StatusLineOverlay {
 
   private addTickerItem(msg: VisualEventMsg, seed: number, speed: number): void {
     if (!this.app) return;
+    while (this.tickerItems.length >= MAX_TICKER_ITEMS) {
+      const oldest = this.tickerItems[0];
+      if (oldest.view.x + oldest.view.width >= 0) return;
+      this.tickerItems.shift();
+      oldest.view.destroy();
+    }
     const view = makeTickerItem(msg);
     const y = this.tickerBaselineY();
     const rightmost = this.tickerItems.reduce(
@@ -357,117 +426,97 @@ class StatusLineOverlay {
   private drawWave(): void {
     if (!this.app) return;
 
-    const width = this.app.screen.width;
     const height = this.app.screen.height;
     const barHeight = this.config.height;
     const active = clamp(this.level, 0, 1);
     const energy = clamp(this.energy, 0, 1.2);
-    const baseY = height - 7 - active * (barHeight * 0.18);
-    const crest = height - barHeight * (0.18 + active * 0.72);
-    const amp = 2 + active * (7 + energy * 10);
-    const step = 14;
-    const time = this.elapsed;
-    const deep = mixColor(LIQUID_BLACK, RAZER_GREEN, 0.46 + active * 0.24);
-    const bright = mixColor(ACID_GREEN, TOXIC_GREEN, 0.48);
+    const geometry: WaveGeometry = {
+      width: this.app.screen.width,
+      height,
+      barHeight,
+      baseY: height - 7 - active * (barHeight * 0.18),
+      crest: height - barHeight * (0.18 + active * 0.72),
+      amp: 2 + active * (7 + energy * 10),
+      step: 14,
+      active,
+      time: this.elapsed,
+      deep: mixColor(LIQUID_BLACK, RAZER_GREEN, 0.46 + active * 0.24),
+      bright: mixColor(ACID_GREEN, TOXIC_GREEN, 0.48),
+    };
 
     this.glow.clear();
-    if (active > 0.015) {
-      this.glow
-        .rect(0, crest - 8, width, 7 + active * 8)
-        .fill(fillStyle(bright, 0.24 + active * 0.30));
-    }
+    this.drawGlow(geometry);
 
+    // The glow still draws while the bar is dormant, so the bail-out sits
+    // between the two layers rather than at the top of the method.
     this.wave.clear();
     if (active < 0.01 && this.textLayer.alpha < 0.02) return;
 
-    const layers: WaveLayerSpec[] = [
-      {
-        yOffset: barHeight * 0.30,
-        amplitudeScale: 0.32,
-        frequency: 1.45,
-        speed: 0.032,
-        phase: 1.7,
-        color: mixColor(LIQUID_BLACK, DEEP_GREEN, 0.62),
-        alpha: 1,
-      },
-      {
-        yOffset: barHeight * 0.20,
-        amplitudeScale: 0.42,
-        frequency: 1.90,
-        speed: -0.040,
-        phase: 4.2,
-        color: mixColor(DEEP_GREEN, RAZER_GREEN, 0.58),
-        alpha: 0.96,
-      },
-      {
-        yOffset: barHeight * 0.11,
-        amplitudeScale: 0.55,
-        frequency: 2.55,
-        speed: 0.052,
-        phase: 2.4,
-        color: mixColor(TOXIC_GREEN, ACID_GREEN, 0.36),
-        alpha: 0.90,
-      },
-    ];
+    this.drawWaveLayers(geometry);
+    this.drawCrest(geometry);
+    this.drawRail(geometry);
+    this.drawLanes(geometry);
+  }
 
-    for (const layer of layers) {
-      const layerBase = Math.min(height + 4, crest + layer.yOffset + active * 8);
+  /** Walks the wave across the bar, sampling `y` at each step. */
+  private traceWave(width: number, step: number, sample: (normalized: number, x: number) => number): void {
+    for (let x = 0; x <= width + step; x += step) {
+      this.wave.lineTo(x, Math.round(sample(x / Math.max(width, 1), x)));
+    }
+  }
+
+  private drawGlow({ width, crest, active, bright }: WaveGeometry): void {
+    if (active <= 0.015) return;
+    this.glow
+      .rect(0, crest - 8, width, 7 + active * 8)
+      .fill(fillStyle(bright, 0.24 + active * 0.30));
+  }
+
+  private drawWaveLayers({ width, height, barHeight, crest, amp, step, active, time }: WaveGeometry): void {
+    for (const layer of WAVE_LAYERS) {
+      const layerBase = Math.min(height + 4, crest + barHeight * layer.yOffsetRatio + active * 8);
       this.wave.moveTo(0, height + 4);
       this.wave.lineTo(0, layerBase);
-      for (let x = 0; x <= width + step; x += step) {
-        const normalized = x / Math.max(width, 1);
-        const y = layerBase
-          + Math.sin(normalized * TAU * layer.frequency + time * layer.speed + layer.phase) * amp * layer.amplitudeScale
-          + Math.sin(normalized * TAU * (layer.frequency + 2.1) - time * layer.speed * 0.7 + this.messageSeed) * amp * layer.amplitudeScale * 0.28;
-        this.wave.lineTo(x, Math.round(y));
-      }
+      this.traceWave(width, step, (normalized) => layerBase
+        + Math.sin(normalized * TAU * layer.frequency + time * layer.speed + layer.phase) * amp * layer.amplitudeScale
+        + Math.sin(normalized * TAU * (layer.frequency + 2.1) - time * layer.speed * 0.7 + this.messageSeed) * amp * layer.amplitudeScale * 0.28);
       this.wave.lineTo(width, height + 4);
       this.wave.closePath();
       this.wave.fill(fillStyle(layer.color, active > 0.02 ? layer.alpha : active));
     }
+  }
 
+  private drawCrest({ width, height, baseY, crest, amp, step, active, time, deep }: WaveGeometry): void {
     this.wave.moveTo(0, height + 4);
     this.wave.lineTo(0, baseY);
-
-    for (let x = 0; x <= width + step; x += step) {
-      const normalized = x / Math.max(width, 1);
-      const y = crest
-        + Math.sin(normalized * TAU * 2.2 + time * 0.06) * amp
-        + Math.sin(normalized * TAU * 5.3 - time * 0.035 + this.messageSeed) * amp * 0.35;
-      this.wave.lineTo(x, Math.round(y));
-    }
-
+    this.traceWave(width, step, (normalized) => crest
+      + Math.sin(normalized * TAU * 2.2 + time * 0.06) * amp
+      + Math.sin(normalized * TAU * 5.3 - time * 0.035 + this.messageSeed) * amp * 0.35);
     this.wave.lineTo(width, height + 4);
     this.wave.closePath();
     this.wave.fill(fillStyle(deep, active > 0.02 ? 1 : active));
+  }
 
+  private drawRail({ width, height, active }: WaveGeometry): void {
     this.wave
       .rect(0, height - 10 - active * 4, width, 8 + active * 4)
       .fill(fillStyle(mixColor(TOXIC_GREEN, ACID_GREEN, 0.38), active > 0.02 ? 0.96 : active));
+  }
 
-    for (let lane = 0; lane < 3; lane++) {
+  private drawLanes({ width, crest, amp, step, active, time }: WaveGeometry): void {
+    LANE_STYLES.forEach((style, lane) => {
       const offset = lane * 13 + Math.sin(time * 0.035 + lane) * 4;
-      const laneAlpha = (lane === 0 ? 0.28 : 0.16 + lane * 0.035) * active;
       this.wave.moveTo(0, crest + offset);
-      for (let x = 0; x <= width + step; x += step) {
-        const normalized = x / Math.max(width, 1);
-        const y = crest + offset
-          + Math.sin(normalized * TAU * (1.7 + lane * 0.8) + time * (0.04 + lane * 0.009)) * (amp * (0.26 + lane * 0.08));
-        this.wave.lineTo(x, Math.round(y));
-      }
-      const laneColor = lane === 0
-        ? bright
-        : lane === 1
-          ? mixColor(ACID_GREEN, TOXIC_GREEN, 0.52)
-          : mixColor(RAZER_GREEN, ACID_GREEN, 0.42);
-      this.wave.stroke({ color: laneColor, alpha: laneAlpha, width: lane === 0 ? 3 : 2 });
-    }
+      this.traceWave(width, step, (normalized) => crest + offset
+        + Math.sin(normalized * TAU * (1.7 + lane * 0.8) + time * (0.04 + lane * 0.009)) * (amp * (0.26 + lane * 0.08)));
+      this.wave.stroke({ color: style.color, alpha: style.alpha * active, width: style.width });
+    });
   }
 
   private updateRipples(delta: number): void {
     if (!this.app) return;
 
-    this.ripplesLayer.removeChildren().forEach((child) => child.destroy());
+    this.ripplesLayer.clear();
     for (let i = this.ripples.length - 1; i >= 0; i--) {
       const ripple = this.ripples[i];
       ripple.life += delta;
@@ -477,15 +526,29 @@ class StatusLineOverlay {
       }
 
       const t = ripple.life / ripple.maxLife;
-      const g = new PIXI.Graphics();
-      g.circle(ripple.x, ripple.y, ripple.radius + t * 46)
+      this.ripplesLayer
+        .circle(ripple.x, ripple.y, ripple.radius + t * 46)
         .stroke({ color: ripple.color, alpha: (1 - t) * 0.42 * this.level, width: 2 });
-      g.circle(ripple.x, ripple.y, 2 + t * 5)
+      this.ripplesLayer
+        .circle(ripple.x, ripple.y, 2 + t * 5)
         .fill(fillStyle(mixColor(ripple.color, 0xffffff, 0.25), (1 - t) * 0.25 * this.level));
-      this.ripplesLayer.addChild(g);
     }
   }
 }
 
-const overlay = new StatusLineOverlay();
-bootstrapOverlay(overlay, { label: 'StatusLine' });
+const config = readConfig();
+const overlay = new StatusLineOverlay(config);
+
+// Spacebar cycles synthetic events through the real receive path so the ticker
+// can be checked without a live backend.
+const TEST_EVENTS: VisualEventMsg[] = [
+  { event: 'chat_message', username: 'test_user', text: 'hello from the debug ticker' },
+  { event: 'follow', username: 'test_user' },
+  { event: 'redemption', username: 'test_user', data: { reward: 'Hydrate!', cost: 250, input: 'glug glug' } },
+];
+let testIndex = 0;
+
+bootstrapOverlay(overlay, {
+  label: 'StatusLine',
+  onTestKey: () => overlay.receiveTestEvent(TEST_EVENTS[testIndex++ % TEST_EVENTS.length]),
+});

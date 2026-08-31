@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
 import { bootstrapOverlay, clamp, OverlayEventSocket } from '../../shared/overlay';
+import type { VisualEventMsg } from '../../shared/overlay';
 import { buildVignette, createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -12,6 +13,7 @@ const GREY_MID   = 0x4a4a4a;
 const GREY_LITE  = 0xb8b8b8;
 const WHITE      = 0xeeeeee;
 const ACID       = 0x88ff20;   // rare acid-green accent, industrial warning
+const CP_VIOLET  = 0xa070ff;   // channel-points accent, kept cold and desaturated
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -50,6 +52,7 @@ interface DistortBand {
 
 class GrungeOverlay {
   private app: PIXI.Application | null = null;
+  private readonly vignette    = new PIXI.Container();
   private readonly staticGfx   = new PIXI.Graphics();  // drifting h-lines
   private readonly grainGfx    = new PIXI.Graphics();
   private readonly dustGfx     = new PIXI.Graphics();
@@ -69,7 +72,7 @@ class GrungeOverlay {
 
   private readonly eventSocket = new OverlayEventSocket({
     label: 'GrungeOverlay',
-    onEvent: () => this.trigger(),
+    onEvent: (msg) => this.trigger(msg),
   });
 
   async init(): Promise<void> {
@@ -78,7 +81,7 @@ class GrungeOverlay {
 
     const { width: w, height: h } = app.screen;
 
-    app.stage.addChild(buildVignette(w, h, { steps: 24, strength: 0.34 }));
+    app.stage.addChild(this.vignette);
     app.stage.addChild(this.staticGfx);
     app.stage.addChild(this.grainGfx);
     app.stage.addChild(this.dustGfx);
@@ -96,17 +99,31 @@ class GrungeOverlay {
     ];
     app.stage.filters = [contrast];
 
+    this.rebuildVignette();
+    window.addEventListener('resize', () => this.rebuildVignette());
+
     this.initDebris(w, h);
     app.ticker.add(({ deltaTime }) => this.tick(deltaTime));
+  }
+
+  /** The vignette gradient is baked to the screen size, so it is redrawn whenever the source resizes. */
+  private rebuildVignette(): void {
+    if (!this.app) return;
+    const { width: w, height: h } = this.app.screen;
+    this.vignette.removeChildren().forEach((child) => child.destroy());
+    this.vignette.addChild(buildVignette(w, h, { steps: 24, strength: 0.34 }));
   }
 
   connectWebSocket(): void {
     this.eventSocket.connect();
   }
 
-  trigger(): void {
+  trigger(msg?: VisualEventMsg): void {
     if (!this.app) return;
     const { width: w, height: h } = this.app.screen;
+
+    // Redemptions trade the acid-green warning accent for channel-points violet.
+    const accent = msg?.event === 'redemption' ? CP_VIOLET : ACID;
 
     // Aggressive horizontal distortion bands
     const count = 4 + Math.floor(Math.random() * 5);
@@ -115,7 +132,7 @@ class GrungeOverlay {
         y:       Math.random() * h,
         h:       4 + Math.floor(Math.random() * 6) * 4,
         shiftX:  (Math.random() - 0.5) * 130,
-        color:   Math.random() > 0.15 ? WHITE : ACID,
+        color:   Math.random() > 0.15 ? WHITE : accent,
         alpha:   0.22 + Math.random() * 0.44,
         life:    0,
         maxLife: 12 + Math.random() * 20,
@@ -162,7 +179,7 @@ class GrungeOverlay {
     if (!this.app) return;
     const { width: w, height: h } = this.app.screen;
     this.staticGfx.clear();
-    // 3–5 drifting horizontal static lines
+    // 4 drifting horizontal static lines
     for (let i = 0; i < 4; i++) {
       const y  = ((this.elapsed * (0.18 + i * 0.07) + i * h * 0.27) % h);
       const lw = w * (0.35 + Math.sin(this.elapsed * 0.012 + i) * 0.22);
@@ -305,4 +322,16 @@ class GrungeOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new GrungeOverlay();
-bootstrapOverlay(overlay, { label: 'GrungeOverlay', onTestKey: () => overlay.trigger() });
+
+// Spacebar alternates a generic burst with a synthetic redemption, so both
+// visual variants can be checked without a live backend.
+const TEST_EVENTS: (VisualEventMsg | undefined)[] = [
+  undefined,
+  { event: 'redemption', username: 'test_user', data: { reward: 'Hydrate!', cost: 250 } },
+];
+let testIndex = 0;
+
+bootstrapOverlay(overlay, {
+  label: 'GrungeOverlay',
+  onTestKey: () => overlay.trigger(TEST_EVENTS[testIndex++ % TEST_EVENTS.length]),
+});

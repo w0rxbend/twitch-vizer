@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
 import { bootstrapOverlay, OverlayEventSocket } from '../../shared/overlay';
+import type { VisualEventMsg } from '../../shared/overlay';
 import { buildVignette, createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -11,6 +12,8 @@ const BG_DARK    = 0x050810;
 const GLITCH_RED = 0xff2838;
 const GLITCH_CYN = 0x00d8ff;
 const AMBER      = 0xc8a040;
+// Channel-points violet, cooled down to sit in this scene's cold palette.
+const CP_VIOLET  = 0x8a5cf5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -54,7 +57,7 @@ class MrRobotOverlay {
 
   private readonly eventSocket = new OverlayEventSocket({
     label: 'MrRobotOverlay',
-    onEvent: () => this.trigger(),
+    onEvent: (msg) => this.trigger(msg),
   });
 
   async init(): Promise<void> {
@@ -85,10 +88,13 @@ class MrRobotOverlay {
     this.eventSocket.connect();
   }
 
-  trigger(): void {
+  trigger(msg?: VisualEventMsg): void {
     if (!this.app) return;
     const { height: h } = this.app.screen;
-    const palette = [COLD_BLUE, GLITCH_CYN, COLD_WHITE, GLITCH_RED, 0x000000, BG_DARK, AMBER];
+    // Redemptions swap the hot red/amber accents for channel-points violet.
+    const palette = msg?.event === 'redemption'
+      ? [COLD_BLUE, GLITCH_CYN, COLD_WHITE, CP_VIOLET, 0x000000, BG_DARK, CP_VIOLET]
+      : [COLD_BLUE, GLITCH_CYN, COLD_WHITE, GLITCH_RED, 0x000000, BG_DARK, AMBER];
     const bands: GlitchBand[] = [];
     const count = 10 + Math.floor(Math.random() * 12);
 
@@ -242,4 +248,16 @@ class MrRobotOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new MrRobotOverlay();
-bootstrapOverlay(overlay, { label: 'MrRobotOverlay', onTestKey: () => overlay.trigger() });
+
+// Spacebar alternates a generic glitch with a synthetic redemption, so both
+// visual variants can be checked without a live backend.
+const TEST_EVENTS: (VisualEventMsg | undefined)[] = [
+  undefined,
+  { event: 'redemption', username: 'test_user', data: { reward: 'Hydrate!', cost: 250 } },
+];
+let testIndex = 0;
+
+bootstrapOverlay(overlay, {
+  label: 'MrRobotOverlay',
+  onTestKey: () => overlay.trigger(TEST_EVENTS[testIndex++ % TEST_EVENTS.length]),
+});

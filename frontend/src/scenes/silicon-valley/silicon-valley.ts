@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js';
 
 import { bootstrapOverlay, clamp, OverlayEventSocket } from '../../shared/overlay';
+import type { VisualEventMsg } from '../../shared/overlay';
 import { createOverlayApp } from '../../shared/pixi';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -9,6 +10,9 @@ const PP_RED      = 0xcc2229;
 const PP_RED_GLOW = 0xe8473f;
 const TEAL        = 0x22d3ee;
 const WHITE       = 0xf5f5f5;
+// Channel-points purple pair, mirroring the red/glow structure.
+const CP_PURPLE      = 0x9147ff;
+const CP_PURPLE_GLOW = 0xb07aff;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,7 +33,14 @@ interface Particle {
   color: number;
   life: number;
   maxLife: number;
+  /** Which trigger() call spawned this particle; connection lines stay within one burst. */
+  burst: number;
 }
+
+// A chat flood can land several bursts inside one particle lifetime, and the
+// connection pass below is quadratic, so the list is capped from the front
+// (oldest and most faded first).
+const MAX_PARTICLES = 200;
 
 // ── NetworkBackground ─────────────────────────────────────────────────────────
 
@@ -85,13 +96,14 @@ class SiliconValleyOverlay {
   private readonly burstGfx = new PIXI.Graphics();
   private readonly flashGfx = new PIXI.Graphics();
   private particles: Particle[] = [];
-  private elapsed    = 0;
-  private flashAge   = 0;
+  private burstCount = 0;
+  private flashAge = 0;
   private flashActive = false;
+  private flashColor = PP_RED_GLOW;
 
   private readonly eventSocket = new OverlayEventSocket({
     label: 'SiliconValleyOverlay',
-    onEvent: () => this.trigger(),
+    onEvent: (msg) => this.trigger(msg),
   });
 
   async init(): Promise<void> {
@@ -112,7 +124,7 @@ class SiliconValleyOverlay {
     this.eventSocket.connect();
   }
 
-  trigger(): void {
+  trigger(msg?: VisualEventMsg): void {
     if (!this.app) return;
     const { width: w, height: h } = this.app.screen;
 
@@ -120,8 +132,12 @@ class SiliconValleyOverlay {
     const ox = 80 + Math.random() * (w - 160);
     const oy = 80 + Math.random() * (h - 160);
 
-    const palette = [PP_RED, PP_RED_GLOW, TEAL, WHITE, PP_RED];
+    // Redemption bursts glow channel-points purple instead of brand red.
+    const palette = msg?.event === 'redemption'
+      ? [CP_PURPLE, CP_PURPLE_GLOW, TEAL, WHITE, CP_PURPLE]
+      : [PP_RED, PP_RED_GLOW, TEAL, WHITE, PP_RED];
     const count   = 28 + Math.floor(Math.random() * 18);
+    const burst   = this.burstCount++;
 
     for (let i = 0; i < count; i++) {
       const angle  = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
@@ -136,6 +152,7 @@ class SiliconValleyOverlay {
         color:   palette[Math.floor(Math.random() * palette.length)],
         life:    0,
         maxLife,
+        burst,
       });
     }
 
@@ -147,15 +164,20 @@ class SiliconValleyOverlay {
         vx: Math.cos(angle) * 0.4, vy: Math.sin(angle) * 0.4,
         r: 0.8, color: WHITE,
         life: 0, maxLife: 18 + Math.random() * 12,
+        burst,
       });
+    }
+
+    if (this.particles.length > MAX_PARTICLES) {
+      this.particles.splice(0, this.particles.length - MAX_PARTICLES);
     }
 
     this.flashAge    = 0;
     this.flashActive = true;
+    this.flashColor  = palette[1];
   }
 
   private tick(delta: number): void {
-    this.elapsed += delta;
     const { width: w, height: h } = this.app?.screen ?? { width: window.innerWidth, height: window.innerHeight };
 
     this.network?.update(delta, w, h);
@@ -183,9 +205,21 @@ class SiliconValleyOverlay {
       this.burstGfx.circle(p.x, p.y, p.r).fill({ color: p.color, alpha });
     }
 
-    // Draw faint lines between nearby burst particles (mimics the network aesthetic)
-    for (let i = 0; i < this.particles.length; i++) {
-      for (let j = i + 1; j < this.particles.length; j++) {
+    // Faint lines between nearby particles (mimics the network aesthetic). Pairs
+    // are only formed within a burst: particles stay in spawn order, so each
+    // burst is a contiguous run, and pairing across runs would make the pass
+    // quadratic in the whole list rather than in one burst.
+    for (let start = 0; start < this.particles.length;) {
+      let end = start + 1;
+      while (end < this.particles.length && this.particles[end].burst === this.particles[start].burst) end++;
+      this.strokeConnections(start, end);
+      start = end;
+    }
+  }
+
+  private strokeConnections(start: number, end: number): void {
+    for (let i = start; i < end; i++) {
+      for (let j = i + 1; j < end; j++) {
         const a = this.particles[i];
         const b = this.particles[j];
         const dist = Math.hypot(b.x - a.x, b.y - a.y);
@@ -204,7 +238,7 @@ class SiliconValleyOverlay {
     this.flashAge += delta;
     this.flashGfx.clear();
     if (this.flashAge < 8) {
-      this.flashGfx.rect(0, 0, w, h).fill({ color: PP_RED_GLOW, alpha: (1 - this.flashAge / 8) * 0.09 });
+      this.flashGfx.rect(0, 0, w, h).fill({ color: this.flashColor, alpha: (1 - this.flashAge / 8) * 0.09 });
     } else {
       this.flashActive = false;
     }
@@ -214,4 +248,16 @@ class SiliconValleyOverlay {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const overlay = new SiliconValleyOverlay();
-bootstrapOverlay(overlay, { label: 'SiliconValleyOverlay', onTestKey: () => overlay.trigger() });
+
+// Spacebar alternates a generic burst with a synthetic redemption, so both
+// visual variants can be checked without a live backend.
+const TEST_EVENTS: (VisualEventMsg | undefined)[] = [
+  undefined,
+  { event: 'redemption', username: 'test_user', data: { reward: 'Hydrate!', cost: 250 } },
+];
+let testIndex = 0;
+
+bootstrapOverlay(overlay, {
+  label: 'SiliconValleyOverlay',
+  onTestKey: () => overlay.trigger(TEST_EVENTS[testIndex++ % TEST_EVENTS.length]),
+});

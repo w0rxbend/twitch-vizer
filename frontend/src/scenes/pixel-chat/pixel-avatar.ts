@@ -2,8 +2,9 @@ import * as PIXI from 'pixi.js';
 
 import { fillStyle, seedRng } from '../../shared/overlay';
 import { loadAvatarImage } from '../../shared/pixi';
+import { makeStaticParticleContainer } from '../../shared/pixi';
 import { PX } from './pixel-helpers';
-import type { Palette } from './theme';
+import type { Palette, PixelChatTheme } from './theme';
 
 /** Outer frame size of the avatar box; PixelChatCard lays out against this. */
 export const AVATAR_SIZE = 36;
@@ -14,8 +15,16 @@ export const AVATAR_INNER = AVATAR_SIZE - AVATAR_INSET * 2;
 
 export class PixelAvatar {
   readonly view = new PIXI.Container();
+  private readonly disposeAvatar?: () => void;
 
-  constructor(texture: PIXI.Texture, seed: number, palette: Palette, userAccent: number, avatarUrl?: string | null) {
+  constructor(
+    texture: PIXI.Texture,
+    seed: number,
+    palette: Palette,
+    userAccent: number,
+    theme: PixelChatTheme,
+    avatarUrl?: string | null,
+  ) {
     const fallback = this.makeFallback(texture, seed, palette, userAccent);
     const mask = new PIXI.Graphics().rect(AVATAR_INSET, AVATAR_INSET, AVATAR_INNER, AVATAR_INNER).fill(0xffffff);
     const backplate = new PIXI.Graphics()
@@ -33,29 +42,23 @@ export class PixelAvatar {
     fallback.mask = mask;
     this.view.addChild(backplate, mask, fallback, frame);
     if (avatarUrl) {
-      loadAvatarImage(avatarUrl, this.view, fallback, {
+      this.disposeAvatar = loadAvatarImage(avatarUrl, this.view, fallback, {
         size: AVATAR_INNER,
         offset: AVATAR_INSET,
         mask,
         addAtIndex: 3,
-        label: 'PixelChatOverlay',
+        label: theme === 'razer' ? 'RazerPixelChat' : 'PixelChatOverlay',
       });
     }
   }
 
+  destroy(): void {
+    this.disposeAvatar?.();
+  }
+
   private makeFallback(texture: PIXI.Texture, seed: number, palette: Palette, userAccent: number): PIXI.ParticleContainer<PIXI.Particle> {
     const rng = seedRng(seed ^ 0xabba);
-    const layer = new PIXI.ParticleContainer<PIXI.Particle>({
-      texture,
-      roundPixels: true,
-      dynamicProperties: {
-        position: false,
-        vertex: false,
-        rotation: false,
-        uvs: false,
-        color: false,
-      },
-    });
+    const layer = makeStaticParticleContainer(texture);
     const particles: PIXI.Particle[] = [];
     const colors = [palette.ink, userAccent, palette.line, palette.gold, palette.rose, palette.blue];
     for (let y = 0; y < 7; y++) {

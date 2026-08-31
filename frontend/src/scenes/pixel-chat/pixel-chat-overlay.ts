@@ -3,9 +3,10 @@ import * as PIXI from 'pixi.js';
 import {
   bootstrapOverlay,
   clamp,
-  hashSeed,
   OverlayEventSocket,
+  ParticleBurst,
   seedRng,
+  UserStyles,
 } from '../../shared/overlay';
 import type { VisualEventMsg } from '../../shared/overlay';
 import { createOverlayApp, makePixelTexture } from '../../shared/pixi';
@@ -17,28 +18,27 @@ import type { Palette, PixelChatTheme } from './theme';
 const CARD_GAP = 12;
 const MAX_CARDS = 7;
 
-interface Spark {
-  particle: PIXI.Particle;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-}
-
 export class PixelChatOverlay {
   private app: PIXI.Application | null = null;
   private pixelTexture: PIXI.Texture | null = null;
   private cards: PixelChatCard[] = [];
-  private userAccents = new Map<string, number>();
-  private serial = 0;
-  private sparks: Spark[] = [];
   private sparkLayer: PIXI.ParticleContainer<PIXI.Particle> | null = null;
+  private readonly sparks = new ParticleBurst<PIXI.Particle>({
+    gravity: 0.052,
+    release: (particle) => this.sparkLayer?.removeParticle(particle),
+  });
+  private readonly userStyles: UserStyles;
   private readonly eventSocket = new OverlayEventSocket({
     label: 'PixelChatOverlay',
     onEvent: (msg) => this.spawn(msg),
   });
 
-  constructor(private readonly theme: PixelChatTheme) {}
+  constructor(private readonly theme: PixelChatTheme) {
+    this.userStyles = new UserStyles({
+      scope: 'pixel-chat',
+      accent: (msg, seed) => userAccentColor(theme, seed, msg.color),
+    });
+  }
 
   async init(): Promise<void> {
     const app = await createOverlayApp({
@@ -73,23 +73,21 @@ export class PixelChatOverlay {
 
   spawn(msg: VisualEventMsg): void {
     if (!this.app || !this.pixelTexture) return;
-    const userKey = this.userKey(msg.username);
-    const userSeed = msg.seed ?? hashSeed(userKey);
-    const userAccent = this.userAccent(msg, userKey, userSeed);
-    const seed = this.nextSeed(msg, userKey, userSeed);
-    const palette = makePalette(this.theme, seed, userAccent);
-    const card = new PixelChatCard(
-      this.app,
-      this.pixelTexture,
+    const style = this.userStyles.for(msg);
+    const seed = this.userStyles.messageSeed(msg, style);
+    const palette = makePalette(this.theme, seed, style.accent);
+    const card = new PixelChatCard({
+      texture: this.pixelTexture,
       msg,
-      this.cardWidth(),
+      width: this.cardWidth(),
       palette,
-      userSeed,
-      userAccent,
+      userSeed: style.seed,
+      userAccent: style.accent,
       seed,
-      this.theme,
-    );
-    card.setInitialX(this.randomCardLeft(card));
+      theme: this.theme,
+    });
+    this.app.stage.addChild(card.view);
+    card.left = this.randomCardLeft(card);
 
     this.cards.unshift(card);
     while (this.cards.length > MAX_CARDS) {
@@ -107,7 +105,7 @@ export class PixelChatOverlay {
         this.layoutCards();
       }
     }
-    this.updateSparks(delta);
+    this.sparks.update(delta);
   }
 
   // Restacks the column vertically. Horizontal positions are deliberately not
@@ -118,7 +116,7 @@ export class PixelChatOverlay {
     let y = this.app.screen.height - 24;
     this.cards.forEach((card) => {
       y -= card.height;
-      card.setTargetY(y);
+      card.setTarget(card.left, y);
       y -= CARD_GAP;
     });
   }
@@ -143,32 +141,6 @@ export class PixelChatOverlay {
     return snap(margin + lane * laneWidth + rng() * laneJitter, PX);
   }
 
-  private userKey(username: string): string {
-    return username.trim().toLowerCase() || 'anonymous';
-  }
-
-  private userAccent(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    const existing = this.userAccents.get(userKey);
-    if (existing !== undefined) return existing;
-    const color = userAccentColor(this.theme, userSeed, msg.color);
-    this.userAccents.set(userKey, color);
-    return color;
-  }
-
-  private nextSeed(msg: VisualEventMsg, userKey: string, userSeed: number): number {
-    this.serial += 1;
-    return hashSeed([
-      'pixel-chat',
-      userKey,
-      userSeed,
-      msg.event,
-      msg.text ?? '',
-      this.serial,
-      performance.now().toFixed(3),
-      Math.floor(Math.random() * 0xffffffff),
-    ].join(':'));
-  }
-
   private burst(card: PixelChatCard, palette: Palette, seed: number): void {
     if (!this.sparkLayer || !this.pixelTexture) return;
     const rng = seedRng(seed ^ 0x5f1ce);
@@ -190,29 +162,11 @@ export class PixelChatOverlay {
         alpha: 0.92,
       });
       this.sparkLayer.addParticle(particle);
-      this.sparks.push({
-        particle,
+      this.sparks.emit(particle, {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0,
         maxLife: 42 + rng() * 36,
       });
-    }
-  }
-
-  private updateSparks(delta: number): void {
-    if (!this.sparkLayer) return;
-    for (let i = this.sparks.length - 1; i >= 0; i--) {
-      const spark = this.sparks[i];
-      spark.life += delta;
-      spark.particle.x += spark.vx * delta;
-      spark.particle.y += spark.vy * delta;
-      spark.vy += 0.052 * delta;
-      spark.particle.alpha = clamp(1 - spark.life / spark.maxLife, 0, 1);
-      if (spark.life >= spark.maxLife) {
-        this.sparkLayer.removeParticle(spark.particle);
-        this.sparks.splice(i, 1);
-      }
     }
   }
 
@@ -229,16 +183,28 @@ export class PixelChatOverlay {
  */
 export function startPixelChat(theme: PixelChatTheme): void {
   const overlay = new PixelChatOverlay(theme);
+  // Synthetic events for the spacebar test hook; each press cycles to the next
+  // one so every event style (including redemptions) can be checked by hand.
+  const testEvents: Array<Partial<VisualEventMsg>> = [
+    { event: 'chat_message', text: 'fresh procedural pixel plate' },
+    {
+      event: 'redemption',
+      data: { reward: 'Hydrate!', cost: 250, input: 'gulp gulp' },
+    },
+    { event: 'follow' },
+    { event: 'cheer', data: { bits: 500 } },
+  ];
+  let testIndex = 0;
   bootstrapOverlay(overlay, {
     label: 'PixelChatOverlay',
     onTestKey: () => {
       const seed = Math.floor(Math.random() * 0xffffff);
       overlay.spawn({
-        event: 'chat_message',
         username: `viewer${seed % 97}`,
-        text: 'fresh procedural pixel plate',
         color: `#${seed.toString(16).padStart(6, '0')}`,
         seed,
+        event: 'chat_message',
+        ...testEvents[testIndex++ % testEvents.length],
       });
     },
   });

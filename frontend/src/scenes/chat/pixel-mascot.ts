@@ -1,9 +1,9 @@
 import * as PIXI from 'pixi.js';
 
 import { fillStyle, hslToRgb, mixColor, seedRng } from '../../shared/overlay';
+import { makeStaticParticleContainer } from '../../shared/pixi';
 import { PX } from './palette';
 import type { Palette } from './palette';
-import { makeStaticParticleContainer } from './particles';
 
 interface MascotProfile {
   shape: number;
@@ -31,12 +31,12 @@ export class PixelMascot {
     const rng = seedRng(seed ^ 0x5ca1ab1e);
     const body = makeStaticParticleContainer(texture);
     const particles: PIXI.Particle[] = [];
-    const profile = this._profile(seed, palette, userColor);
+    const profile = this.profile(seed, palette, userColor);
 
-    this._monsterBody(particles, texture, rng, profile);
-    this._monsterExtras(particles, texture, rng, profile, true);
-    this._monsterFace(particles, texture, rng, profile);
-    this._monsterExtras(particles, texture, rng, profile, false);
+    this.monsterBody(particles, texture, rng, profile);
+    this.backAccessories(particles, texture, profile);
+    this.monsterFace(particles, texture, rng, profile);
+    this.frontExtras(particles, texture, rng, profile);
 
     body.addParticle(...particles);
     body.update();
@@ -52,7 +52,7 @@ export class PixelMascot {
     this.view.scale.set(0.96);
   }
 
-  private _profile(seed: number, palette: Palette, userColor: number): MascotProfile {
+  private profile(seed: number, palette: Palette, userColor: number): MascotProfile {
     const hue = seed % 360;
     const colors = [
       userColor,
@@ -81,7 +81,7 @@ export class PixelMascot {
     };
   }
 
-  private _add(
+  private add(
     out: PIXI.Particle[],
     texture: PIXI.Texture,
     x: number,
@@ -102,7 +102,7 @@ export class PixelMascot {
     }));
   }
 
-  private _monsterBody(
+  private monsterBody(
     out: PIXI.Particle[],
     texture: PIXI.Texture,
     rng: () => number,
@@ -148,7 +148,7 @@ export class PixelMascot {
         const edge = !cells[y - 1]?.[x] || !cells[y + 1]?.[x] || !cells[y]?.[x - 1] || !cells[y]?.[x + 1];
         const baseTint = y > cy + 1.3 ? profile.shade : profile.bodyColor;
         const tint = edge ? profile.dark : baseTint;
-        this._add(out, texture, x * PX, y * PX, PX, PX, tint, 0.98);
+        this.add(out, texture, x * PX, y * PX, PX, PX, tint, 0.98);
       }
     }
 
@@ -159,13 +159,13 @@ export class PixelMascot {
         const y = 3 + Math.floor(rng() * 7);
         if (cells[y]?.[x]) {
           const tint = i % 2 === 0 ? profile.highlight : mixColor(profile.spotColor, profile.dark, 0.2);
-          this._add(out, texture, x * PX, y * PX, PX, PX, tint, 0.62);
+          this.add(out, texture, x * PX, y * PX, PX, PX, tint, 0.62);
         }
       }
     }
   }
 
-  private _monsterFace(
+  private monsterFace(
     out: PIXI.Particle[],
     texture: PIXI.Texture,
     rng: () => number,
@@ -177,71 +177,71 @@ export class PixelMascot {
     const tooth = 0xfff0b5;
 
     if (profile.eyes === 0) {
-      this._eye(out, texture, 3, 3, eyeColor, pupil);
-      this._eye(out, texture, 7, 3, eyeColor, pupil);
+      this.eye(out, texture, 3, 3, eyeColor, pupil);
+      this.eye(out, texture, 7, 3, eyeColor, pupil);
     } else if (profile.eyes === 1) {
-      this._eye(out, texture, 5, 3, eyeColor, pupil, 3);
-      this._add(out, texture, 8 * PX, 2 * PX, PX, PX, profile.highlight, 0.78);
+      this.eye(out, texture, 5, 3, eyeColor, pupil, 3);
+      this.add(out, texture, 8 * PX, 2 * PX, PX, PX, profile.highlight, 0.78);
     } else if (profile.eyes === 2) {
-      this._eye(out, texture, 2, 2, eyeColor, pupil);
-      this._eye(out, texture, 8, 4, eyeColor, pupil);
+      this.eye(out, texture, 2, 2, eyeColor, pupil);
+      this.eye(out, texture, 8, 4, eyeColor, pupil);
     } else if (profile.eyes === 3) {
-      this._add(out, texture, 3 * PX, 4 * PX, 3 * PX, PX, pupil, 0.92);
-      this._add(out, texture, 7 * PX, 4 * PX, 3 * PX, PX, pupil, 0.92);
+      this.add(out, texture, 3 * PX, 4 * PX, 3 * PX, PX, pupil, 0.92);
+      this.add(out, texture, 7 * PX, 4 * PX, 3 * PX, PX, pupil, 0.92);
     } else if (profile.eyes === 4) {
-      this._eye(out, texture, 2, 3, eyeColor, pupil);
-      this._eye(out, texture, 5, 2, eyeColor, pupil);
-      this._eye(out, texture, 8, 3, eyeColor, pupil);
+      this.eye(out, texture, 2, 3, eyeColor, pupil);
+      this.eye(out, texture, 5, 2, eyeColor, pupil);
+      this.eye(out, texture, 8, 3, eyeColor, pupil);
     } else if (profile.eyes === 5) {
-      this._eye(out, texture, 5, 2, eyeColor, pupil);
-      this._add(out, texture, 3 * PX, 4 * PX, 2 * PX, PX, pupil, 0.9);
-      this._add(out, texture, 8 * PX, 4 * PX, 2 * PX, PX, pupil, 0.9);
+      this.eye(out, texture, 5, 2, eyeColor, pupil);
+      this.add(out, texture, 3 * PX, 4 * PX, 2 * PX, PX, pupil, 0.9);
+      this.add(out, texture, 8 * PX, 4 * PX, 2 * PX, PX, pupil, 0.9);
     } else if (profile.eyes === 6) {
-      this._eye(out, texture, 4, 3, eyeColor, pupil);
-      this._eye(out, texture, 8, 3, eyeColor, pupil);
-      this._add(out, texture, 2 * PX, 2 * PX, 3 * PX, PX, profile.dark, 0.72);
-      this._add(out, texture, 8 * PX, 2 * PX, 3 * PX, PX, profile.dark, 0.72);
+      this.eye(out, texture, 4, 3, eyeColor, pupil);
+      this.eye(out, texture, 8, 3, eyeColor, pupil);
+      this.add(out, texture, 2 * PX, 2 * PX, 3 * PX, PX, profile.dark, 0.72);
+      this.add(out, texture, 8 * PX, 2 * PX, 3 * PX, PX, profile.dark, 0.72);
     } else if (profile.eyes === 7) {
-      this._eye(out, texture, 5, 2, eyeColor, pupil, 2);
-      this._eye(out, texture, 5, 5, eyeColor, pupil, 2);
+      this.eye(out, texture, 5, 2, eyeColor, pupil, 2);
+      this.eye(out, texture, 5, 5, eyeColor, pupil, 2);
     } else {
-      this._eye(out, texture, 3, 3, eyeColor, pupil);
-      this._eye(out, texture, 8, 3, eyeColor, pupil);
-      if (profile.eyes === 9) this._eye(out, texture, 6, 1, eyeColor, pupil);
+      this.eye(out, texture, 3, 3, eyeColor, pupil);
+      this.eye(out, texture, 8, 3, eyeColor, pupil);
+      if (profile.eyes === 9) this.eye(out, texture, 6, 1, eyeColor, pupil);
     }
 
     const mouthY = profile.shape === 4 ? 8 : 7;
     if (profile.mouth === 0) {
-      this._add(out, texture, 3 * PX, mouthY * PX, 6 * PX, 2 * PX, mouth, 0.96);
-      this._add(out, texture, 4 * PX, mouthY * PX, PX, PX, tooth, 0.98);
-      this._add(out, texture, 7 * PX, mouthY * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 3 * PX, mouthY * PX, 6 * PX, 2 * PX, mouth, 0.96);
+      this.add(out, texture, 4 * PX, mouthY * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 7 * PX, mouthY * PX, PX, PX, tooth, 0.98);
     } else if (profile.mouth === 1) {
-      this._add(out, texture, 4 * PX, mouthY * PX, 4 * PX, 3 * PX, mouth, 0.96);
-      this._add(out, texture, 5 * PX, (mouthY + 2) * PX, PX, PX, 0xff6b7d, 0.95);
+      this.add(out, texture, 4 * PX, mouthY * PX, 4 * PX, 3 * PX, mouth, 0.96);
+      this.add(out, texture, 5 * PX, (mouthY + 2) * PX, PX, PX, 0xff6b7d, 0.95);
     } else if (profile.mouth === 2) {
-      this._add(out, texture, 4 * PX, mouthY * PX, 5 * PX, PX, mouth, 0.96);
+      this.add(out, texture, 4 * PX, mouthY * PX, 5 * PX, PX, mouth, 0.96);
     } else if (profile.mouth === 3) {
-      this._add(out, texture, 3 * PX, mouthY * PX, 7 * PX, PX, mouth, 0.96);
-      this._add(out, texture, 4 * PX, (mouthY + 1) * PX, PX, PX, tooth, 0.98);
-      this._add(out, texture, 8 * PX, (mouthY + 1) * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 3 * PX, mouthY * PX, 7 * PX, PX, mouth, 0.96);
+      this.add(out, texture, 4 * PX, (mouthY + 1) * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 8 * PX, (mouthY + 1) * PX, PX, PX, tooth, 0.98);
     } else if (profile.mouth === 4) {
-      this._add(out, texture, 5 * PX, mouthY * PX, 3 * PX, PX, mouth, 0.96);
-      this._add(out, texture, 4 * PX, (mouthY + 1) * PX, PX, PX, mouth, 0.96);
-      this._add(out, texture, 8 * PX, (mouthY + 1) * PX, PX, PX, mouth, 0.96);
+      this.add(out, texture, 5 * PX, mouthY * PX, 3 * PX, PX, mouth, 0.96);
+      this.add(out, texture, 4 * PX, (mouthY + 1) * PX, PX, PX, mouth, 0.96);
+      this.add(out, texture, 8 * PX, (mouthY + 1) * PX, PX, PX, mouth, 0.96);
     } else if (profile.mouth === 5) {
-      this._add(out, texture, 4 * PX, mouthY * PX, 5 * PX, 3 * PX, mouth, 0.96);
-      this._add(out, texture, 5 * PX, mouthY * PX, PX, PX, tooth, 0.98);
-      this._add(out, texture, 7 * PX, mouthY * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 4 * PX, mouthY * PX, 5 * PX, 3 * PX, mouth, 0.96);
+      this.add(out, texture, 5 * PX, mouthY * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 7 * PX, mouthY * PX, PX, PX, tooth, 0.98);
     } else {
-      this._add(out, texture, 4 * PX, mouthY * PX, 5 * PX, 2 * PX, mouth, 0.92);
-      this._add(out, texture, 6 * PX, mouthY * PX, PX, PX, tooth, 0.98);
+      this.add(out, texture, 4 * PX, mouthY * PX, 5 * PX, 2 * PX, mouth, 0.92);
+      this.add(out, texture, 6 * PX, mouthY * PX, PX, PX, tooth, 0.98);
     }
     if (profile.mouth === 1 || profile.mouth === 5 || rng() > 0.82) {
-      this._add(out, texture, 5 * PX, (mouthY + 2) * PX, 2 * PX, PX, 0xff6b7d, 0.95);
+      this.add(out, texture, 5 * PX, (mouthY + 2) * PX, 2 * PX, PX, 0xff6b7d, 0.95);
     }
   }
 
-  private _eye(
+  private eye(
     out: PIXI.Particle[],
     texture: PIXI.Texture,
     x: number,
@@ -250,74 +250,76 @@ export class PixelMascot {
     pupil: number,
     size = 2,
   ): void {
-    this._add(out, texture, x * PX, y * PX, size * PX, size * PX, eyeColor, 0.98);
-    this._add(out, texture, (x + size - 1) * PX, (y + size - 1) * PX, PX, PX, pupil, 1);
+    this.add(out, texture, x * PX, y * PX, size * PX, size * PX, eyeColor, 0.98);
+    this.add(out, texture, (x + size - 1) * PX, (y + size - 1) * PX, PX, PX, pupil, 1);
   }
 
-  private _monsterExtras(
+  private backAccessories(
+    out: PIXI.Particle[],
+    texture: PIXI.Texture,
+    profile: MascotProfile,
+  ): void {
+    if (profile.accessory === 4 || profile.accessory === 11) {
+      this.add(out, texture, -2 * PX, 5 * PX, 4 * PX, 3 * PX, profile.shade, 0.84);
+      this.add(out, texture, 11 * PX, 5 * PX, 4 * PX, 3 * PX, profile.shade, 0.84);
+      this.add(out, texture, -PX, 4 * PX, 2 * PX, PX, profile.highlight, 0.5);
+      this.add(out, texture, 12 * PX, 4 * PX, 2 * PX, PX, profile.highlight, 0.5);
+    }
+    if (profile.accessory === 5 || profile.accessory === 12) {
+      this.add(out, texture, 11 * PX, 8 * PX, 4 * PX, PX, profile.dark, 0.9);
+      this.add(out, texture, 14 * PX, 7 * PX, PX, 2 * PX, profile.shade, 0.9);
+    }
+  }
+
+  private frontExtras(
     out: PIXI.Particle[],
     texture: PIXI.Texture,
     rng: () => number,
     profile: MascotProfile,
-    behindBody: boolean,
   ): void {
-    if (behindBody) {
-      if (profile.accessory === 4 || profile.accessory === 11) {
-        this._add(out, texture, -2 * PX, 5 * PX, 4 * PX, 3 * PX, profile.shade, 0.84);
-        this._add(out, texture, 11 * PX, 5 * PX, 4 * PX, 3 * PX, profile.shade, 0.84);
-        this._add(out, texture, -PX, 4 * PX, 2 * PX, PX, profile.highlight, 0.5);
-        this._add(out, texture, 12 * PX, 4 * PX, 2 * PX, PX, profile.highlight, 0.5);
-      }
-      if (profile.accessory === 5 || profile.accessory === 12) {
-        this._add(out, texture, 11 * PX, 8 * PX, 4 * PX, PX, profile.dark, 0.9);
-        this._add(out, texture, 14 * PX, 7 * PX, PX, 2 * PX, profile.shade, 0.9);
-      }
-      return;
-    }
-
     if (profile.accessory === 0 || profile.accessory === 7) {
-      this._add(out, texture, 2 * PX, 0, PX, 3 * PX, profile.dark, 0.95);
-      this._add(out, texture, 9 * PX, 0, PX, 3 * PX, profile.dark, 0.95);
-      this._add(out, texture, 2 * PX, 0, 2 * PX, PX, profile.highlight, 0.8);
-      this._add(out, texture, 8 * PX, 0, 2 * PX, PX, profile.highlight, 0.8);
+      this.add(out, texture, 2 * PX, 0, PX, 3 * PX, profile.dark, 0.95);
+      this.add(out, texture, 9 * PX, 0, PX, 3 * PX, profile.dark, 0.95);
+      this.add(out, texture, 2 * PX, 0, 2 * PX, PX, profile.highlight, 0.8);
+      this.add(out, texture, 8 * PX, 0, 2 * PX, PX, profile.highlight, 0.8);
     } else if (profile.accessory === 1 || profile.accessory === 8) {
       for (let i = 0; i < 3; i++) {
-        this._add(out, texture, (4 + i) * PX, (1 - i) * PX, PX, 4 * PX, profile.highlight, 0.86);
+        this.add(out, texture, (4 + i) * PX, (1 - i) * PX, PX, 4 * PX, profile.highlight, 0.86);
       }
     } else if (profile.accessory === 2) {
       for (let i = 0; i < 5; i++) {
-        this._add(out, texture, (3 + i) * PX, (i % 2) * PX, PX, 2 * PX, profile.dark, 0.9);
+        this.add(out, texture, (3 + i) * PX, (i % 2) * PX, PX, 2 * PX, profile.dark, 0.9);
       }
     } else if (profile.accessory === 3 || profile.accessory === 10) {
-      this._add(out, texture, 0, 4 * PX, 2 * PX, 3 * PX, profile.shade, 0.9);
-      this._add(out, texture, 11 * PX, 4 * PX, 2 * PX, 3 * PX, profile.shade, 0.9);
+      this.add(out, texture, 0, 4 * PX, 2 * PX, 3 * PX, profile.shade, 0.9);
+      this.add(out, texture, 11 * PX, 4 * PX, 2 * PX, 3 * PX, profile.shade, 0.9);
     } else if (profile.accessory === 6) {
-      this._add(out, texture, 4 * PX, 0, 4 * PX, PX, profile.highlight, 0.8);
-      this._add(out, texture, 5 * PX, -PX, 2 * PX, PX, profile.spotColor, 0.88);
+      this.add(out, texture, 4 * PX, 0, 4 * PX, PX, profile.highlight, 0.8);
+      this.add(out, texture, 5 * PX, -PX, 2 * PX, PX, profile.spotColor, 0.88);
     } else if (profile.accessory === 9) {
-      this._add(out, texture, 4 * PX, -PX, 4 * PX, 2 * PX, 0xffb53d, 0.92);
-      this._add(out, texture, 5 * PX, -2 * PX, 2 * PX, PX, 0xffef67, 0.92);
+      this.add(out, texture, 4 * PX, -PX, 4 * PX, 2 * PX, 0xffb53d, 0.92);
+      this.add(out, texture, 5 * PX, -2 * PX, 2 * PX, PX, 0xffef67, 0.92);
     } else if (profile.accessory === 13) {
-      this._add(out, texture, 3 * PX, 0, 6 * PX, PX, profile.dark, 0.82);
-      this._add(out, texture, 5 * PX, -PX, 2 * PX, PX, profile.dark, 0.82);
+      this.add(out, texture, 3 * PX, 0, 6 * PX, PX, profile.dark, 0.82);
+      this.add(out, texture, 5 * PX, -PX, 2 * PX, PX, profile.dark, 0.82);
     }
 
     if (profile.limbs === 1 || profile.limbs === 4) {
-      this._add(out, texture, 0, 7 * PX, 3 * PX, PX, profile.bodyColor, 0.95);
-      this._add(out, texture, 10 * PX, 7 * PX, 3 * PX, PX, profile.bodyColor, 0.95);
-      this._add(out, texture, 0, 8 * PX, PX, 2 * PX, profile.shade, 0.95);
-      this._add(out, texture, 12 * PX, 8 * PX, PX, 2 * PX, profile.shade, 0.95);
+      this.add(out, texture, 0, 7 * PX, 3 * PX, PX, profile.bodyColor, 0.95);
+      this.add(out, texture, 10 * PX, 7 * PX, 3 * PX, PX, profile.bodyColor, 0.95);
+      this.add(out, texture, 0, 8 * PX, PX, 2 * PX, profile.shade, 0.95);
+      this.add(out, texture, 12 * PX, 8 * PX, PX, 2 * PX, profile.shade, 0.95);
     } else if (profile.limbs === 2 || profile.limbs === 6) {
-      this._add(out, texture, PX, 8 * PX, 2 * PX, 2 * PX, profile.shade, 0.95);
-      this._add(out, texture, 10 * PX, 8 * PX, 2 * PX, 2 * PX, profile.shade, 0.95);
+      this.add(out, texture, PX, 8 * PX, 2 * PX, 2 * PX, profile.shade, 0.95);
+      this.add(out, texture, 10 * PX, 8 * PX, 2 * PX, 2 * PX, profile.shade, 0.95);
     } else if (profile.limbs === 3) {
-      this._add(out, texture, 0, 6 * PX, 2 * PX, PX, profile.dark, 0.9);
-      this._add(out, texture, 11 * PX, 6 * PX, 2 * PX, PX, profile.dark, 0.9);
+      this.add(out, texture, 0, 6 * PX, 2 * PX, PX, profile.dark, 0.9);
+      this.add(out, texture, 11 * PX, 6 * PX, 2 * PX, PX, profile.dark, 0.9);
     }
 
     if (profile.limbs !== 0 || rng() > 0.58) {
-      this._add(out, texture, 2 * PX, 11 * PX, 2 * PX, PX, profile.dark, 0.95);
-      this._add(out, texture, 8 * PX, 11 * PX, 2 * PX, PX, profile.dark, 0.95);
+      this.add(out, texture, 2 * PX, 11 * PX, 2 * PX, PX, profile.dark, 0.95);
+      this.add(out, texture, 8 * PX, 11 * PX, 2 * PX, PX, profile.dark, 0.95);
     }
   }
 }

@@ -1,11 +1,30 @@
 import * as PIXI from 'pixi.js';
 
 import { fillStyle, hslToRgb, mixColor, seedRng } from '../../shared/overlay';
+import { makeStaticParticleContainer } from '../../shared/pixi';
 import { addPixelParticle, PX } from './pixel-helpers';
 import type { Palette } from './theme';
 
 /** Vertical space PixelChatCard reserves for the companion sprite. */
 export const COMPANION_HEIGHT = 76;
+
+/** The per-seed choices every drawing step reads from. */
+interface CompanionProfile {
+  type: number;
+  eyes: number;
+  mouth: number;
+  hat: number;
+  body: number;
+  shirt: number;
+  accent: number;
+  hair: number;
+  skin: number;
+  dark: number;
+  light: number;
+}
+
+type CellFn = (x: number, y: number, tint: number, alpha?: number) => void;
+type BlockFn = (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void;
 
 /** A small procedural mascot (blob, human, robot, ...) drawn per user seed. */
 export class PixelCompanion {
@@ -15,21 +34,11 @@ export class PixelCompanion {
     const shadow = new PIXI.Graphics()
       .rect(14, 67, 38, PX).fill(fillStyle(0x000000, 0.34))
       .rect(20, 70, 26, PX).fill(fillStyle(0x000000, 0.22));
-    const layer = new PIXI.ParticleContainer<PIXI.Particle>({
-      texture,
-      roundPixels: true,
-      dynamicProperties: {
-        position: false,
-        vertex: false,
-        rotation: false,
-        uvs: false,
-        color: false,
-      },
-    });
+    const layer = makeStaticParticleContainer(texture);
     const rng = seedRng(seed ^ 0xc0de);
     const particles: PIXI.Particle[] = [];
     const colors = this.makeColors(palette, userAccent, seed);
-    const profile = {
+    const profile: CompanionProfile = {
       type: seed % 12,
       eyes: Math.floor(seed / 13) % 8,
       mouth: Math.floor(seed / 41) % 7,
@@ -84,17 +93,11 @@ export class PixelCompanion {
   }
 
   private blobBody(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    profile: {
-      type: number;
-      body: number;
-      dark: number;
-      light: number;
-      accent: number;
-    },
+    cell: CellFn,
+    profile: Pick<CompanionProfile, 'type' | 'body' | 'dark' | 'light' | 'accent'>,
     rng: () => number,
   ): void {
-    const cx = profile.type === 1 ? 8 : profile.type === 3 ? 9 : 8;
+    const cx = profile.type === 3 ? 9 : 8;
     const cy = profile.type === 2 ? 8 : 9;
     const rx = [5.7, 4.4, 5.0, 4.8, 5.8][profile.type] ?? 5.2;
     const ry = [6.0, 6.4, 5.2, 6.7, 4.9][profile.type] ?? 5.6;
@@ -139,17 +142,9 @@ export class PixelCompanion {
   }
 
   private humanBody(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    block: (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void,
-    profile: {
-      type: number;
-      shirt: number;
-      skin: number;
-      hair: number;
-      dark: number;
-      accent: number;
-      light: number;
-    },
+    cell: CellFn,
+    block: BlockFn,
+    profile: Pick<CompanionProfile, 'type' | 'shirt' | 'skin' | 'hair' | 'dark' | 'accent' | 'light'>,
     rng: () => number,
   ): void {
     block(5, 3, 7, 7, profile.dark);
@@ -179,15 +174,9 @@ export class PixelCompanion {
   }
 
   private robotBody(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    block: (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void,
-    profile: {
-      body: number;
-      shirt: number;
-      dark: number;
-      accent: number;
-      light: number;
-    },
+    cell: CellFn,
+    block: BlockFn,
+    profile: Pick<CompanionProfile, 'body' | 'shirt' | 'dark' | 'accent' | 'light'>,
     rng: () => number,
   ): void {
     block(4, 3, 10, 9, profile.dark);
@@ -211,15 +200,9 @@ export class PixelCompanion {
   }
 
   private tallOneEyeBody(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    block: (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void,
-    profile: {
-      type: number;
-      body: number;
-      dark: number;
-      light: number;
-      accent: number;
-    },
+    cell: CellFn,
+    block: BlockFn,
+    profile: Pick<CompanionProfile, 'type' | 'body' | 'dark' | 'light' | 'accent'>,
     rng: () => number,
   ): void {
     const cx = profile.type === 10 ? 8 : 7;
@@ -241,16 +224,9 @@ export class PixelCompanion {
   }
 
   private face(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    block: (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void,
-    profile: {
-      type: number;
-      eyes: number;
-      mouth: number;
-      dark: number;
-      light: number;
-      accent: number;
-    },
+    cell: CellFn,
+    block: BlockFn,
+    profile: Pick<CompanionProfile, 'type' | 'eyes' | 'mouth' | 'dark' | 'light' | 'accent'>,
   ): void {
     const eye = profile.eyes % 3 === 0 ? 0xffffff : profile.eyes % 3 === 1 ? 0xfff07a : 0xbfffff;
     const pupil = 0x081018;
@@ -287,15 +263,9 @@ export class PixelCompanion {
   }
 
   private accessories(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    block: (x: number, y: number, w: number, h: number, tint: number, alpha?: number) => void,
-    profile: {
-      hat: number;
-      dark: number;
-      light: number;
-      accent: number;
-      shirt: number;
-    },
+    cell: CellFn,
+    block: BlockFn,
+    profile: Pick<CompanionProfile, 'hat' | 'dark' | 'light' | 'accent' | 'shirt'>,
     rng: () => number,
     palette: Palette,
   ): void {
@@ -333,12 +303,8 @@ export class PixelCompanion {
   }
 
   private dither(
-    cell: (x: number, y: number, tint: number, alpha?: number) => void,
-    profile: {
-      body: number;
-      light: number;
-      accent: number;
-    },
+    cell: CellFn,
+    profile: Pick<CompanionProfile, 'body' | 'light' | 'accent'>,
     rng: () => number,
   ): void {
     const colors = [profile.body, profile.light, profile.accent];

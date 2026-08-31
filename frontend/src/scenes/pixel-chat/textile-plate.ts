@@ -5,6 +5,22 @@ import { PX, TILE } from './pixel-helpers';
 import { ribbonSchemes } from './theme';
 import type { Palette, PixelChatTheme } from './theme';
 
+/**
+ * Motif drawers in dispatch order: the index a seed lands on picks the ribbon
+ * pattern, so reordering this list changes what every existing seed renders.
+ */
+const MOTIF_DRAWERS = [
+  'drawVerticalScallops',
+  'drawCrescentColumns',
+  'drawBracketWaves',
+  'drawChevronRibbon',
+  'drawDotArcRibbon',
+  'drawSwirlColumns',
+  'drawFlowerRosettes',
+  'drawDiamondChain',
+  'drawLeafVines',
+] as const;
+
 /** The procedurally patterned backing plate a chat card sits on. */
 export class TextilePlate {
   readonly view = new PIXI.Container();
@@ -105,19 +121,11 @@ export class TextilePlate {
     const used = new Set<number>();
     const layers = 2 + Math.floor(rng() * 3);
     for (let layer = 0; layer < layers; layer++) {
-      let current = (motif + layer + Math.floor(rng() * 4)) % 9;
-      while (used.has(current)) current = (current + 1) % 9;
+      let current = (motif + layer + Math.floor(rng() * 4)) % MOTIF_DRAWERS.length;
+      while (used.has(current)) current = (current + 1) % MOTIF_DRAWERS.length;
       used.add(current);
 
-      if (current === 0) this.drawVerticalScallops(g, width, height, colors, rng);
-      else if (current === 1) this.drawCrescentColumns(g, width, height, colors, rng);
-      else if (current === 2) this.drawBracketWaves(g, width, height, colors, rng);
-      else if (current === 3) this.drawChevronRibbon(g, width, height, colors, rng);
-      else if (current === 4) this.drawDotArcRibbon(g, width, height, colors, rng);
-      else if (current === 5) this.drawSwirlColumns(g, width, height, colors, rng);
-      else if (current === 6) this.drawFlowerRosettes(g, width, height, colors, rng);
-      else if (current === 7) this.drawDiamondChain(g, width, height, colors, rng);
-      else this.drawLeafVines(g, width, height, colors, rng);
+      this[MOTIF_DRAWERS[current]](g, width, height, colors, rng);
     }
     this.drawColorSprinkles(g, width, height, colors, rng);
   }

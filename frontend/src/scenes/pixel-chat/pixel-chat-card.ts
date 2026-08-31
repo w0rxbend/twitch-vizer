@@ -1,7 +1,8 @@
 import * as PIXI from 'pixi.js';
 
-import { fitDisplayObject, loadEmoteDisplay } from '../../shared/emote-images';
+import { layoutMessageParts } from '../../shared/message-layout';
 import {
+  approach,
   clamp,
   fillStyle,
   formatEventLabel,
@@ -47,34 +48,38 @@ function textParts(msg: VisualEventMsg): MessagePart[] {
   return renderMessageParts(msg, messageText(msg));
 }
 
+export interface PixelChatCardOptions {
+  texture: PIXI.Texture;
+  msg: VisualEventMsg;
+  width: number;
+  palette: Palette;
+  userSeed: number;
+  userAccent: number;
+  seed: number;
+  theme: PixelChatTheme;
+}
+
 export class PixelChatCard {
   readonly view = new PIXI.Container();
   readonly height: number;
   readonly width: number;
   readonly seed: number;
+  /** Left edge chosen once at spawn; the overlay only restacks vertically. */
+  left = 0;
   private readonly fx = new PIXI.Graphics();
   private readonly noise = new PIXI.Graphics();
   private readonly lifetime = CARD_LIFETIME;
   private readonly fxColors: number[];
   private readonly companion: PIXI.Container;
   private readonly companionBaseY: number;
+  private readonly avatar: PixelAvatar;
   private age = 0;
-  private assignedX = 0;
   private targetX = 0;
   private targetY = 0;
   private positioned = false;
 
-  constructor(
-    app: PIXI.Application,
-    texture: PIXI.Texture,
-    msg: VisualEventMsg,
-    width: number,
-    palette: Palette,
-    userSeed: number,
-    userAccent: number,
-    seed: number,
-    theme: PixelChatTheme,
-  ) {
+  constructor(options: PixelChatCardOptions) {
+    const { texture, msg, width, palette, userSeed, userAccent, seed, theme } = options;
     this.width = width;
     this.seed = seed;
     this.fxColors = [
@@ -118,7 +123,7 @@ export class PixelChatCard {
 
     this.height = Math.max(MIN_CARD_HEIGHT, Math.ceil(content.height + CONTENT_V_PADDING));
     const plate = new TextilePlate(width, this.height, palette, userAccent, seed, theme);
-    const avatar = new PixelAvatar(texture, userSeed, palette, userAccent, msg.avatarUrl ?? null);
+    const avatar = new PixelAvatar(texture, userSeed, palette, userAccent, theme, msg.avatarUrl ?? null);
     const companion = new PixelCompanion(texture, palette, userAccent, userSeed ^ seed);
 
     name.x = TEXT_X;
@@ -133,24 +138,16 @@ export class PixelChatCard {
     companion.view.y = Math.max(0, Math.round((this.height - COMPANION_HEIGHT) / 2));
     this.companion = companion.view;
     this.companionBaseY = companion.view.y;
+    this.avatar = avatar;
 
     this.view.addChild(plate.view, this.fx, companion.view, name, tag, content, avatar.view, this.noise);
-    app.stage.addChild(this.view);
   }
 
-  setInitialX(x: number): void {
-    this.assignedX = x;
-    this.targetX = this.assignedX;
-    if (!this.positioned) {
-      this.view.x = this.assignedX;
-    }
-  }
-
-  setTargetY(y: number): void {
-    this.targetX = this.assignedX;
+  setTarget(x: number, y: number): void {
+    this.targetX = x;
     this.targetY = y;
     if (!this.positioned) {
-      this.view.x = this.assignedX;
+      this.view.x = x;
       this.view.y = y + 16;
       this.positioned = true;
     }
@@ -169,8 +166,8 @@ export class PixelChatCard {
     const hoverX = snap(Math.sin((this.age + this.seed % 101) * 0.032) * PX, PX);
     const hoverY = snap(Math.sin((this.age + this.seed % 89) * 0.045) * PX * 1.5, PX);
 
-    this.view.x += (this.targetX + hoverX + jitter - this.view.x) * 0.22 * delta;
-    this.view.y += (this.targetY + hoverY - this.view.y) * 0.24 * delta;
+    this.view.x = approach(this.view.x, this.targetX + hoverX + jitter, 0.22, delta);
+    this.view.y = approach(this.view.y, this.targetY + hoverY, 0.24, delta);
     this.view.alpha = ease * leave * (0.94 + shimmer);
     this.view.scale.x = 1 + glitch * 0.012 + Math.sin(this.age * 0.035 + this.seed) * 0.003;
     this.view.scale.y = 1 - glitch * 0.008 + Math.cos(this.age * 0.031 + this.seed) * 0.003;
@@ -184,96 +181,49 @@ export class PixelChatCard {
 
   destroy(): void {
     this.view.destroy({ children: true });
+    this.avatar.destroy();
   }
 
   private makeContent(msg: VisualEventMsg, palette: Palette, wrap: number): PIXI.Container {
-    const content = new PIXI.Container();
-    const style = {
-      fontFamily: FONT,
-      fontSize: 17,
-      fontWeight: '900' as const,
-      fill: TEXT_WHITE,
-      lineHeight: 24,
-      letterSpacing: 0,
-      stroke: { color: TEXT_BLACK, width: 3 },
-      dropShadow: {
-        color: 0x000000,
-        alpha: 0.42,
-        distance: 2,
-        blur: 0,
+    return layoutMessageParts(textParts(msg), {
+      wrap,
+      textStyle: {
+        fontFamily: FONT,
+        fontSize: 17,
+        fontWeight: '900',
+        fill: TEXT_WHITE,
+        lineHeight: 24,
+        letterSpacing: 0,
+        stroke: { color: TEXT_BLACK, width: 3 },
+        dropShadow: {
+          color: 0x000000,
+          alpha: 0.42,
+          distance: 2,
+          blur: 0,
+        },
       },
-    };
-    const imageSize = 24;
-    const gap = 4;
-    const lineHeight = 24;
-    let x = 0;
-    let y = 0;
-    let hasContent = false;
-
-    const newline = () => {
-      x = 0;
-      y += lineHeight;
-    };
-    const place = (node: PIXI.Container | PIXI.Text, nodeWidth: number, nodeHeight = lineHeight) => {
-      if (x > 0 && x + nodeWidth > wrap) newline();
-      node.x = x;
-      node.y = y + Math.max(0, Math.floor((lineHeight - nodeHeight) / 2));
-      content.addChild(node);
-      x += nodeWidth + gap;
-      hasContent = true;
-    };
-    const addText = (text: string) => {
-      for (const chunk of text.match(/\S+\s*|\s+/g) ?? []) {
-        if (!chunk.trim()) {
-          x = Math.min(wrap, x + 8);
-          continue;
-        }
-        const label = new PIXI.Text({ text: chunk, style });
-        if (label.width > wrap) label.scale.x = wrap / label.width;
-        place(label, Math.min(label.width, wrap), label.height);
-      }
-    };
-    const addImage = (part: MessagePart) => {
-      if (!part.url && !part.animatedUrl) return;
-      const holder = new PIXI.Container();
-      holder.addChild(new PIXI.Graphics()
-        .rect(0, 0, imageSize, imageSize).fill(fillStyle(palette.night, 0.70))
-        .rect(PX, PX, imageSize - PX * 2, imageSize - PX * 2).stroke({ color: palette.gold, width: 2, alpha: 0.78 }));
-      this.loadInlineImage(part, holder, imageSize);
-      place(holder, imageSize, imageSize);
-    };
-
-    for (const part of textParts(msg)) {
-      if (part.type === 'image') addImage(part);
-      else addText(part.text ?? '');
-    }
-
-    if (!hasContent) addText(messageText(msg));
-    return content;
-  }
-
-  private loadInlineImage(part: MessagePart, holder: PIXI.Container, size: number): void {
-    loadEmoteDisplay(part)
-      .then((sprite) => {
-        if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
+      imageSize: 24,
+      gap: 4,
+      lineHeight: 24,
+      imageInset: 4,
+      imageOffset: 2,
+      makeImageBacking: (size) => new PIXI.Graphics()
+        .rect(0, 0, size, size).fill(fillStyle(palette.night, 0.70))
+        .rect(PX, PX, size - PX * 2, size - PX * 2).stroke({ color: palette.gold, width: 2, alpha: 0.78 }),
+      onImageLoaded: (sprite) => {
         // The display is a Sprite or AnimatedSprite; Container's type lacks roundPixels.
         (sprite as PIXI.Container & { roundPixels?: boolean }).roundPixels = true;
-        fitDisplayObject(sprite, size - 4);
-        sprite.x += 2;
-        sprite.y += 2;
-        holder.addChild(sprite);
-      })
-      .catch(() => {
-        if ((holder as PIXI.Container & { destroyed?: boolean }).destroyed) return;
-        const fallback = new PIXI.Text({
-          text: part.name?.trim() || '?',
-          style: { fontFamily: FONT, fontSize: part.name && part.name.length <= 2 ? 18 : 10, fontWeight: '900', fill: 0xffffff, letterSpacing: 0 },
-        });
-        if (fallback.width > size - 4) fallback.scale.x = (size - 4) / fallback.width;
-        fallback.x = Math.round((size - fallback.width) / 2);
-        fallback.y = Math.round((size - fallback.height) / 2);
-        holder.addChild(fallback);
-      });
+      },
+      fallbackText: (part) => part.name?.trim() || '?',
+      fallbackTextStyle: (part) => ({
+        fontFamily: FONT,
+        fontSize: part.name && part.name.length <= 2 ? 18 : 10,
+        fontWeight: '900',
+        fill: 0xffffff,
+        letterSpacing: 0,
+      }),
+      emptyText: messageText(msg),
+    });
   }
 
   private drawNoise(amount: number): void {

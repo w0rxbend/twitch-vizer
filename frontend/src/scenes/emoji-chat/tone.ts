@@ -219,8 +219,13 @@ const DICTIONARY_RULES: ToneRule[] = [
   },
 ];
 
+// Below this score a prediction is not trusted to name a tone. The model's own
+// output is collapsed to 'neutral' under it, and the scene uses the same bar
+// before letting a late ML result replace the fast keyword guess.
+export const MIN_TONE_CONFIDENCE = 0.55;
+
 function neutralTone(method: ToneResult['method']): ToneResult {
-  return { tone: 'neutral', expression: 'neutral', confidence: 0.56, method };
+  return { tone: 'neutral', expression: 'neutral', confidence: MIN_TONE_CONFIDENCE + 0.01, method };
 }
 
 export function emojiTone(text: string): ToneResult {
@@ -286,7 +291,7 @@ export function normalizeTone(predictions: unknown): ToneResult | null {
   // Unparseable model output: report failure so the caller keeps its local result.
   if (!best) return null;
 
-  if ((best.score as number) < 0.55) {
+  if ((best.score as number) < MIN_TONE_CONFIDENCE) {
     return { tone: 'neutral', expression: 'neutral', confidence: best.score as number, method: 'transformers.js' };
   }
 

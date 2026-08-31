@@ -1,5 +1,6 @@
 import * as PIXI from 'pixi.js';
 
+import { approach, clamp, fillStyle, hashSeed, seedRng } from '../../shared/overlay';
 import type { Expression, ToneResult } from './tone';
 
 export interface StickerData {
@@ -25,31 +26,6 @@ const ANGRY_EDGE = 0xd9271c;
 const ANGRY_LIGHT = 0xff8a35;
 // Measured in Pixi ticker frames; all chip timing assumes a 60fps ticker.
 export const CARD_LIFETIME = 26 * 60;
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-export function hashSeed(value: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-export function seedRng(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = Math.imul(1664525, state) + 1013904223;
-    return ((state >>> 0) / 0x100000000);
-  };
-}
-
-function rgba(color: number, alpha: number): { color: number; alpha: number } {
-  return { color, alpha };
-}
 
 function drawSoftPill(
   g: PIXI.Graphics,
@@ -108,7 +84,7 @@ function tear(g: PIXI.Graphics, x: number, y: number, size = 12): void {
   g.bezierCurveTo(x - size * 0.55, y + size * 0.75, x - size * 0.65, y - size * 0.1, x, y - size);
   g.closePath();
   g.fill(BLUE);
-  g.circle(x - size * 0.22, y - size * 0.10, size * 0.18).fill(rgba(0xffffff, 0.58));
+  g.circle(x - size * 0.22, y - size * 0.10, size * 0.18).fill(fillStyle(0xffffff, 0.58));
 }
 
 function heart(g: PIXI.Graphics, x: number, y: number, size = 9, color = 0xf23a52): void {
@@ -252,16 +228,16 @@ const FACE_DRAWERS: Record<Expression, FaceDrawer> = {
     g.roundRect(eyeL - 15, cy - 19, 25, 15, 4).fill(0x141414);
     g.roundRect(eyeR - 10, cy - 19, 25, 15, 4).fill(0x141414);
     g.rect(eyeL + 8, cy - 14, 15, 4).fill(0x141414);
-    g.rect(eyeL - 13 + (t * 0.18) % 15, cy - 17, 7, 3).fill(rgba(0xffffff, 0.32));
-    g.rect(eyeR - 8 + (t * 0.18) % 15, cy - 17, 7, 3).fill(rgba(0xffffff, 0.32));
+    g.rect(eyeL - 13 + (t * 0.18) % 15, cy - 17, 7, 3).fill(fillStyle(0xffffff, 0.32));
+    g.rect(eyeR - 8 + (t * 0.18) % 15, cy - 17, 7, 3).fill(fillStyle(0xffffff, 0.32));
     smile(g, cx - 16, cy + 15 + soft * 0.3, 32, 9);
   },
   lovely: (g, { cx, cy, eyeL, eyeR, t, bob, quick, pulse }) => {
     closedEye(g, eyeL, cy - 10 + bob * 0.25, 1);
     closedEye(g, eyeR, cy - 10 + bob * 0.25, 1);
     smile(g, cx - 14, cy + 8 + bob * 0.2, 28, 8 + pulse * 0.5);
-    g.circle(eyeL - 10, cy + 8, 7 + Math.max(quick, 0) * 0.7).fill(rgba(PINK, 0.58));
-    g.circle(eyeR + 10, cy + 8, 7 + Math.max(quick, 0) * 0.7).fill(rgba(PINK, 0.58));
+    g.circle(eyeL - 10, cy + 8, 7 + Math.max(quick, 0) * 0.7).fill(fillStyle(PINK, 0.58));
+    g.circle(eyeR + 10, cy + 8, 7 + Math.max(quick, 0) * 0.7).fill(fillStyle(PINK, 0.58));
     heart(g, eyeR + 22 + Math.sin(t * 0.11) * 1.5, cy - 25 - bob, 8 * pulse);
     heart(g, eyeR + 18 + Math.sin(t * 0.09 + 1) * 1.2, cy + 20 - bob * 0.6, 7 * (1 + Math.sin(t * 0.17 + 2) * 0.12));
   },
@@ -407,8 +383,8 @@ export class EmojiStickerChip {
     const ease = 1 - Math.pow(1 - enter, 3);
     const wobble = Math.sin(this.age * 0.035 + this.seed) * 1.8;
     const float = Math.sin(this.age * 0.027 + this.seed * 0.33) * 3.2;
-    this.baseX += (this.targetX - this.baseX) * 0.22 * delta;
-    this.baseY += (this.targetY - this.baseY) * 0.24 * delta;
+    this.baseX = approach(this.baseX, this.targetX, 0.22, delta);
+    this.baseY = approach(this.baseY, this.targetY, 0.24, delta);
     this.view.x = this.baseX + wobble;
     this.view.y = this.baseY + float;
     this.view.rotation = Math.sin(this.age * 0.018 + this.seed) * 0.01;
@@ -433,16 +409,16 @@ export class EmojiStickerChip {
     const rSeed = this.seed ^ this.width ^ (this.data.expression.length * 317);
 
     this.shadow.clear();
-    drawSoftPill(this.shadow, 3, 9, this.width, this.height, rgba(0x3c2c00, 0.16), rSeed);
+    drawSoftPill(this.shadow, 3, 9, this.width, this.height, fillStyle(0x3c2c00, 0.16), rSeed);
 
     this.body.clear();
     drawSoftPill(this.body, 0, 0, this.width, this.height, base, rSeed);
-    drawSoftPill(this.body, 2, 3, this.width - 4, this.height * 0.48, rgba(highlight, 0.34), rSeed ^ 0xaaa);
-    this.body.rect(18, this.height - 8, this.width - 42, 4).fill(rgba(edge, 0.18));
+    drawSoftPill(this.body, 2, 3, this.width - 4, this.height * 0.48, fillStyle(highlight, 0.34), rSeed ^ 0xaaa);
+    this.body.rect(18, this.height - 8, this.width - 42, 4).fill(fillStyle(edge, 0.18));
 
     this.shine.clear();
-    this.shine.ellipse(this.width * 0.24, 13, this.width * 0.18, 7).fill(rgba(0xffffff, 0.20));
-    this.shine.ellipse(this.width * 0.62, 11, this.width * 0.12, 5).fill(rgba(0xffffff, 0.10));
+    this.shine.ellipse(this.width * 0.24, 13, this.width * 0.18, 7).fill(fillStyle(0xffffff, 0.20));
+    this.shine.ellipse(this.width * 0.62, 11, this.width * 0.12, 5).fill(fillStyle(0xffffff, 0.10));
 
     this.redrawFaceAnimation();
     this.drawSenderBadge();
@@ -487,10 +463,10 @@ export class EmojiStickerChip {
     const seed = this.seed ^ hashSeed(text) ^ 0x51a7e;
 
     this.senderBadge.clear();
-    drawSoftPill(this.senderBadge, x + 2, y + 3, badgeW, badgeH, rgba(0x3c2c00, 0.14), seed);
+    drawSoftPill(this.senderBadge, x + 2, y + 3, badgeW, badgeH, fillStyle(0x3c2c00, 0.14), seed);
     drawSoftPill(this.senderBadge, x, y, badgeW, badgeH, 0xffec7a, seed);
-    drawSoftPill(this.senderBadge, x + 3, y + 2, badgeW - 6, badgeH * 0.46, rgba(0xffffff, 0.24), seed ^ 0x99);
-    this.senderBadge.rect(x + 13, y + badgeH - 5, badgeW - 26, 3).fill(rgba(0xe3a600, 0.28));
+    drawSoftPill(this.senderBadge, x + 3, y + 2, badgeW - 6, badgeH * 0.46, fillStyle(0xffffff, 0.24), seed ^ 0x99);
+    this.senderBadge.rect(x + 13, y + badgeH - 5, badgeW - 26, 3).fill(fillStyle(0xe3a600, 0.28));
 
     this.senderLabel.x = Math.round(x + (badgeW - this.senderLabel.width) / 2);
     this.senderLabel.y = Math.round(y + (badgeH - this.senderLabel.height) / 2) - 1;
