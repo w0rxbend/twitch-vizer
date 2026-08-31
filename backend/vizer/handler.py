@@ -5,7 +5,8 @@ Pipeline for a USER message:
   2. Build a VisualEvent dataclass.
   3. Broadcast the event JSON over WebSocket to all connected browser clients.
 
-SYSTEM messages (follows, subs, raids, cheers) follow the same broadcast path
+SYSTEM messages (follows, subs, gift subs, raids, cheers, channel-point
+redemptions) follow the same broadcast path
 but carry an event type string and structured data dict instead of chat text.
 """
 
@@ -36,6 +37,7 @@ class EventType(StrEnum):
     GIFT_SUB = "gift_sub"
     CHEER = "cheer"
     RAID = "raid"
+    REDEMPTION = "redemption"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ class MessageKind(Enum):
     """Distinguishes chat messages from channel-event announcements."""
 
     USER = auto()  # regular chatter message
-    SYSTEM = auto()  # follow/sub/raid/cheer — broadcast directly
+    SYSTEM = auto()  # follow/sub/gift sub/raid/cheer/redemption — broadcast directly
 
 
 @dataclass

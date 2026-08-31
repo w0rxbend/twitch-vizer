@@ -5,11 +5,13 @@ from unittest import mock
 
 from vizer import bot as bot_module
 from vizer.bot import (
+    VizBot,
     _fragment_emote_url,
     _message_parts_from_fragments,
     get_user_id,
 )
 from vizer.config import TwitchCredentials
+from vizer.handler import MessageKind, QueuedMessage
 
 
 class BotFragmentParsingTest(unittest.TestCase):
@@ -75,6 +77,48 @@ class BotFragmentParsingTest(unittest.TestCase):
             _fragment_emote_url(fragment),
             "https://static-cdn.jtvnw.net/emoticons/v2/1/static/dark/3.0",
         )
+
+
+class RedemptionEventTest(unittest.TestCase):
+    def _bot_with_queue(self) -> tuple[VizBot, asyncio.Queue[QueuedMessage]]:
+        # Bypass AutoBot.__init__ (it opens network resources); the handler
+        # under test only touches _message_queue and _display_name.
+        bot = VizBot.__new__(VizBot)
+        queue: asyncio.Queue[QueuedMessage] = asyncio.Queue()
+        bot._message_queue = queue
+        return bot, queue
+
+    def test_enqueues_redemption_with_reward_data(self) -> None:
+        bot, queue = self._bot_with_queue()
+        payload = SimpleNamespace(
+            user=SimpleNamespace(name="viewer"),
+            reward=SimpleNamespace(title="Hydrate!", cost=500),
+            user_input="cheers",
+        )
+
+        asyncio.run(bot.event_custom_redemption_add(payload))  # type: ignore[arg-type]
+
+        message = queue.get_nowait()
+        self.assertEqual(message.kind, MessageKind.SYSTEM)
+        self.assertEqual(message.system_event, "redemption")
+        self.assertEqual(message.username, "viewer")
+        self.assertEqual(
+            message.system_data,
+            {"reward": "Hydrate!", "cost": 500, "input": "cheers"},
+        )
+
+    def test_omits_input_when_reward_takes_none(self) -> None:
+        bot, queue = self._bot_with_queue()
+        payload = SimpleNamespace(
+            user=SimpleNamespace(name="viewer"),
+            reward=SimpleNamespace(title="Hydrate!", cost=500),
+            user_input="",
+        )
+
+        asyncio.run(bot.event_custom_redemption_add(payload))  # type: ignore[arg-type]
+
+        message = queue.get_nowait()
+        self.assertEqual(message.system_data, {"reward": "Hydrate!", "cost": 500})
 
 
 class GetUserIdTest(unittest.TestCase):

@@ -374,6 +374,9 @@ class VizBot(commands.AutoBot):
             eventsub.ChannelRaidSubscription(
                 to_broadcaster_user_id=user_id,
             ),
+            eventsub.ChannelPointsRedeemAddSubscription(
+                broadcaster_user_id=user_id,
+            ),
         ]
 
     async def event_message(self, payload: ChatMessage) -> None:
@@ -496,6 +499,24 @@ class VizBot(commands.AutoBot):
             username=display,
             event=EventType.CHEER,
             data={"bits": payload.bits},
+        )
+
+    async def event_custom_redemption_add(
+        self, payload: twitchio.ChannelPointsRedemptionAdd
+    ) -> None:
+        username = self._display_name(payload.user)
+        reward_title = payload.reward.title
+        LOGGER.info("Redemption from %s: %s", username, reward_title)
+        data: dict[str, Any] = {
+            "reward": reward_title,
+            "cost": payload.reward.cost,
+        }
+        if payload.user_input:
+            data["input"] = payload.user_input
+        await self._enqueue_system_event(
+            username=username,
+            event=EventType.REDEMPTION,
+            data=data,
         )
 
     async def event_raid(self, payload: twitchio.ChannelRaid) -> None:

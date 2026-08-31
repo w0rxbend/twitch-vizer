@@ -115,6 +115,29 @@ class VisualEventFactoryTest(unittest.TestCase):
         self.assertEqual(event.data, {"viewers": 42})
         self.assertEqual(event.text, "")
 
+    def test_creates_redemption_event_with_reward_data(self) -> None:
+        factory = VisualEventFactory(
+            MessageContentResolver(EmoteCatalog()),
+            UserVisualIdentity(),
+        )
+
+        event = factory.create(
+            QueuedMessage(
+                username="viewer",
+                text="",
+                kind=MessageKind.SYSTEM,
+                system_event=EventType.REDEMPTION,
+                system_data={"reward": "Hydrate!", "cost": 500, "input": "cheers"},
+            ),
+        )
+
+        self.assertEqual(event.event, "redemption")
+        self.assertEqual(event.username, "viewer")
+        self.assertEqual(
+            event.data, {"reward": "Hydrate!", "cost": 500, "input": "cheers"}
+        )
+        self.assertEqual(event.text, "")
+
 
 class EmoteCatalogFromFileTest(unittest.TestCase):
     def setUp(self) -> None:

@@ -275,4 +275,10 @@ OBS browser-source scene over WebSocket
 
 The browser scenes consume JSON `VisualEvent` payloads. Chat events use
 `event="chat_message"`; channel events use names such as `follow`, `sub`,
-`cheer`, `raid`, and `gift_sub`.
+`cheer`, `raid`, `gift_sub`, and `redemption` (a viewer redeeming a custom
+channel points reward — `data` carries the reward title, its point cost, and
+the viewer's text input when the reward asks for one).
+
+Redemption events only arrive if the broadcaster's OAuth token includes the
+`channel:read:redemptions` scope (or the broader `channel:manage:redemptions`);
+without it, Twitch rejects the EventSub subscription.
