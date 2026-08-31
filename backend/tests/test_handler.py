@@ -116,10 +116,6 @@ class VisualEventFactoryTest(unittest.TestCase):
         self.assertEqual(event.text, "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EmoteCatalogFromFileTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -182,3 +178,7 @@ class EmoteCatalogFromFileTest(unittest.TestCase):
         catalog = EmoteCatalog.from_file(str(path))
 
         self.assertIsNone(catalog.resolve("Kappa"))
+
+
+if __name__ == "__main__":
+    unittest.main()
