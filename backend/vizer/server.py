@@ -9,6 +9,7 @@ convenience for local combined hosting. The bot/server runtime does not require
 frontend files; overlays can be hosted separately and pointed at /ws.
 """
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -129,11 +130,16 @@ class VizServer:
             return
         LOGGER.info("Broadcasting %s to %d client(s)", event.event, len(self._clients))
         message = json.dumps(dataclasses.asdict(event))
+        clients = list(self._clients)
+        results = await asyncio.gather(
+            *(ws.send_text(message) for ws in clients), return_exceptions=True
+        )
         dead: set[WebSocket] = set()
-        for ws in self._clients:
-            try:
-                await ws.send_text(message)
-            except Exception:
+        for ws, result in zip(clients, results):
+            if isinstance(result, BaseException):
+                LOGGER.debug(
+                    "Dropping WS client after send failure: %r", result, exc_info=result
+                )
                 dead.add(ws)
         if dead:
             LOGGER.warning("Dropped %d stale client(s)", len(dead))
