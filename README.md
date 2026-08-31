@@ -156,6 +156,19 @@ http://localhost:8080/scenes/chat/
 The backend index at `http://localhost:8080/` returns JSON with the WebSocket
 path and any built scene names available under `vizer/static/scenes`.
 
+### Previewing a scene without live chat
+
+Append `?debug=1` to any scene URL to enable the spacebar preview trigger, which
+injects a fabricated chat message or event so you can position and style the
+overlay before going live:
+
+```text
+http://localhost:8080/scenes/chat/?debug=1
+```
+
+The trigger is off by default so that a stray keypress in an OBS browser source
+cannot put a fake follow or cheer on stream.
+
 ## Docker
 
 Run the published image with one command (reads `.env` via `env_file`):
