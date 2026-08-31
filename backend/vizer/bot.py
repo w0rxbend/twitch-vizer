@@ -70,6 +70,15 @@ def _asset_to_url(asset: object) -> str:
     return ""
 
 
+def _login_of(user: object) -> str | None:
+    """First name-ish attribute twitchio exposes for a user, if any."""
+    for attr in ("name", "login", "display_name"):
+        value = getattr(user, attr, None)
+        if value:
+            return str(value)
+    return None
+
+
 def _nested_attr(source: object, *path: str) -> object:
     value = source
     for attr in path:
@@ -80,6 +89,15 @@ def _nested_attr(source: object, *path: str) -> object:
         else:
             value = getattr(value, attr, None)
     return value
+
+
+def _fragment_emote_id(fragment: object) -> str:
+    value = (
+        _nested_attr(fragment, "emote", "id")
+        or _nested_attr(fragment, "emote_id")
+        or _nested_attr(fragment, "id")
+    )
+    return str(value) if value else ""
 
 
 def _fragment_emote_url(fragment: object) -> str:
@@ -100,25 +118,17 @@ def _fragment_emote_url(fragment: object) -> str:
         if url:
             return url
 
-    emote_id = (
-        _nested_attr(fragment, "emote", "id")
-        or _nested_attr(fragment, "emote_id")
-        or _nested_attr(fragment, "id")
-    )
+    emote_id = _fragment_emote_id(fragment)
     if emote_id:
-        return twitch_emote_cdn_url(str(emote_id))
+        return twitch_emote_cdn_url(emote_id)
     return ""
 
 
 def _fragment_animated_emote_url(fragment: object) -> str:
     """Return an animated Twitch emote URL candidate for clients that support GIFs."""
-    emote_id = (
-        _nested_attr(fragment, "emote", "id")
-        or _nested_attr(fragment, "emote_id")
-        or _nested_attr(fragment, "id")
-    )
+    emote_id = _fragment_emote_id(fragment)
     if emote_id:
-        return twitch_emote_cdn_url(str(emote_id), animated=True)
+        return twitch_emote_cdn_url(emote_id, animated=True)
 
     static_url = _fragment_emote_url(fragment)
     if not static_url:
@@ -183,13 +193,14 @@ def _message_parts_from_fragments(
                 _nested_attr(fragment, "emote", "name")
             )
             emote_names.append(emote_name)
+            emote_url = _fragment_emote_url(fragment)
             parts.append(
                 MessagePart(
                     type="image",
                     name=emote_name,
-                    url=_fragment_emote_url(fragment),
+                    url=emote_url,
                     animated_url=_fragment_animated_emote_url(fragment),
-                    static_url=_fragment_emote_url(fragment),
+                    static_url=emote_url,
                 )
             )
             continue
@@ -269,11 +280,7 @@ class VizBot(commands.AutoBot):
     async def _get_avatar_url(self, chatter: object) -> str | None:
         """Fetch and cache the chatter profile image URL for overlay avatars."""
         chatter_id = getattr(chatter, "id", None) or getattr(chatter, "user_id", None)
-        login = (
-            getattr(chatter, "name", None)
-            or getattr(chatter, "login", None)
-            or getattr(chatter, "display_name", None)
-        )
+        login = _login_of(chatter)
         cache_key = str(chatter_id or login or "").lower()
         if not cache_key:
             return None
@@ -284,7 +291,7 @@ class VizBot(commands.AutoBot):
             if chatter_id:
                 user = await self.fetch_user(id=str(chatter_id))
             elif login:
-                user = await self.fetch_user(login=str(login))
+                user = await self.fetch_user(login=login)
             else:
                 return None
         except Exception as exc:
@@ -305,14 +312,7 @@ class VizBot(commands.AutoBot):
         self._avatar_url_cache[cache_key] = avatar_url
 
     def _display_name(self, user: object | None, fallback: str = "anonymous") -> str:
-        if user is None:
-            return fallback
-        name = (
-            getattr(user, "name", None)
-            or getattr(user, "login", None)
-            or getattr(user, "display_name", None)
-        )
-        return str(name) if name else fallback
+        return _login_of(user) or fallback
 
     async def load_tokens(self, path: str | None = None, /) -> None:
         """Load persisted OAuth tokens, defaulting to the configured token file."""
