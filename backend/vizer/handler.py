@@ -131,21 +131,38 @@ class VisualIdentity:
 
 _TWEMOJI_BASE = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72"
 
+_VARIATION_SELECTOR_16 = 0xFE0F
+_ZERO_WIDTH_JOINER = 0x200D
+_COMBINING_KEYCAP = 0x20E3
+_SKIN_TONE_FIRST = 0x1F3FB
+_SKIN_TONE_LAST = 0x1F3FF
+
 
 def _emoji_url(char: str) -> str:
     """Return the Twemoji PNG URL for an emoji cluster."""
-    codepoints = "-".join(f"{ord(c):x}" for c in char if ord(c) != 0xFE0F)
+    codepoints = "-".join(
+        f"{ord(c):x}" for c in char if ord(c) != _VARIATION_SELECTOR_16
+    )
     return f"{_TWEMOJI_BASE}/{codepoints}.png"
 
 
 def _is_emoji_base(char: str) -> bool:
     cp = ord(char)
-    return 0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
+    return (
+        0x1F000 <= cp <= 0x1FAFF  # pictographs, faces, flags
+        or 0x2600 <= cp <= 0x27BF  # misc symbols and dingbats
+        or 0x2300 <= cp <= 0x23FF  # misc technical
+    )
 
 
 def _is_emoji_modifier(char: str) -> bool:
     cp = ord(char)
-    return cp == 0xFE0F or cp == 0x200D or cp == 0x20E3 or 0x1F3FB <= cp <= 0x1F3FF
+    return (
+        cp == _VARIATION_SELECTOR_16
+        or cp == _ZERO_WIDTH_JOINER
+        or cp == _COMBINING_KEYCAP
+        or _SKIN_TONE_FIRST <= cp <= _SKIN_TONE_LAST
+    )
 
 
 def _emoji_cluster_at(text: str, start: int) -> tuple[str, int] | None:
@@ -156,9 +173,9 @@ def _emoji_cluster_at(text: str, start: int) -> tuple[str, int] | None:
     # Keycap emoji: 1️⃣, #️⃣, *️⃣
     if first in "0123456789#*":
         maybe_end = end
-        if maybe_end < len(text) and ord(text[maybe_end]) == 0xFE0F:
+        if maybe_end < len(text) and ord(text[maybe_end]) == _VARIATION_SELECTOR_16:
             maybe_end += 1
-        if maybe_end < len(text) and ord(text[maybe_end]) == 0x20E3:
+        if maybe_end < len(text) and ord(text[maybe_end]) == _COMBINING_KEYCAP:
             return text[start : maybe_end + 1], maybe_end + 1
         return None
 
@@ -170,7 +187,7 @@ def _emoji_cluster_at(text: str, start: int) -> tuple[str, int] | None:
         if _is_emoji_modifier(char):
             end += 1
             continue
-        if ord(text[end - 1]) == 0x200D and _is_emoji_base(char):
+        if ord(text[end - 1]) == _ZERO_WIDTH_JOINER and _is_emoji_base(char):
             end += 1
             continue
         break
