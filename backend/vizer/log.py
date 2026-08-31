@@ -19,7 +19,7 @@ def setup_logging(log_level: str = "INFO") -> None:
     Called once from runtime.run() right after settings are loaded, so all
     subsequent log output is consistently formatted.
     """
-    level = getattr(logging, log_level.upper(), logging.INFO)
+    level = logging.getLevelNamesMapping().get(log_level.upper(), logging.INFO)
 
     fmt = colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s  %(levelname)-8s%(reset)s  "
