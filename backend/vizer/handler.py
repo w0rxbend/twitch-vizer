@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum, auto
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .emote_urls import animated_twitch_emote_url, plain_twitch_emote_url
 
@@ -55,7 +55,7 @@ class EmoteItem:
 class MessagePart:
     """One inline message fragment for frontend rendering."""
 
-    type: str  # "text" | "image"
+    type: Literal["text", "image"]
     text: str = ""
     name: str = ""
     url: str = ""
@@ -78,7 +78,7 @@ class MessagePart:
 class VisualEvent:
     """Payload broadcast over WebSocket to connected browser scenes."""
 
-    event: str  # one of the EventType values
+    event: EventType
     username: str
     text: str = ""
     color: str = "#4CAF50"
@@ -103,7 +103,7 @@ class QueuedMessage:
     username: str
     text: str
     kind: MessageKind = field(default=MessageKind.USER)
-    system_event: str = ""  # one of the EventType values
+    system_event: EventType | None = None
     system_data: dict[str, Any] = field(default_factory=dict)
     avatar_url: str | None = None
     emote_names: list[str] = field(default_factory=list)
@@ -402,6 +402,8 @@ class VisualEventFactory:
 
     def create(self, message: QueuedMessage) -> VisualEvent:
         if message.kind is MessageKind.SYSTEM:
+            if message.system_event is None:
+                raise ValueError(f"SYSTEM message from {message.username} has no event")
             return VisualEvent(
                 event=message.system_event,
                 username=message.username,

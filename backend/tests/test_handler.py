@@ -5,6 +5,7 @@ from pathlib import Path
 
 from vizer.handler import (
     EmoteCatalog,
+    EventType,
     MessageContentResolver,
     MessageKind,
     MessagePart,
@@ -105,7 +106,7 @@ class VisualEventFactoryTest(unittest.TestCase):
                 username="raider",
                 text="",
                 kind=MessageKind.SYSTEM,
-                system_event="raid",
+                system_event=EventType.RAID,
                 system_data={"viewers": 42},
             ),
         )
