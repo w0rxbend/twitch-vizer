@@ -42,6 +42,26 @@ export function makePixelTexture(app: PIXI.Application): PIXI.Texture {
   return texture;
 }
 
+/**
+ * A ParticleContainer for artwork that is drawn once and never animated:
+ * every per-particle property is static so PIXI can bake the geometry.
+ */
+export function makeStaticParticleContainer(
+  texture: PIXI.Texture,
+): PIXI.ParticleContainer<PIXI.Particle> {
+  return new PIXI.ParticleContainer<PIXI.Particle>({
+    texture,
+    roundPixels: true,
+    dynamicProperties: {
+      position: false,
+      vertex: false,
+      rotation: false,
+      uvs: false,
+      color: false,
+    },
+  });
+}
+
 export interface VignetteOptions {
   /** Number of concentric rectangle rings. */
   steps?: number;
@@ -94,24 +114,34 @@ export interface AvatarImageOptions {
  * Loads an avatar image and, on success, hides the fallback graphic and adds
  * a masked, box-fitted sprite to the view. On failure the fallback is shown
  * and a warning logged. Safe against the view being destroyed mid-load.
+ *
+ * Returns a disposer that the owning card must call from its own destroy():
+ * `view.destroy({ children: true })` does not release textures in Pixi v8, so
+ * without it every avatar leaks one GPU texture for the life of the source.
+ * The disposer only ever frees the texture created here, never a
+ * caller-supplied mask or a shared texture parented under the same view.
  */
 export function loadAvatarImage(
   url: string,
   view: PIXI.Container,
   fallback: PIXI.Container,
   options: AvatarImageOptions,
-): void {
+): () => void {
   const { size, offset = 0, addAtIndex = view.children.length, label = 'Overlay' } = options;
 
   const image = new Image();
   image.crossOrigin = 'anonymous';
   image.referrerPolicy = 'no-referrer';
 
+  let texture: PIXI.Texture | null = null;
+  let disposed = false;
+
   image.onload = () => {
-    if ((view as PIXI.Container & { destroyed?: boolean }).destroyed) return;
+    if (disposed || (view as PIXI.Container & { destroyed?: boolean }).destroyed) return;
     fallback.alpha = 0;
 
-    const sprite = new PIXI.Sprite(PIXI.Texture.from(image));
+    texture = PIXI.Texture.from(image);
+    const sprite = new PIXI.Sprite(texture);
     sprite.roundPixels = options.roundPixels ?? true;
     const scale = size / Math.max(image.naturalWidth, image.naturalHeight, 1);
     sprite.scale.set(scale);
@@ -129,8 +159,19 @@ export function loadAvatarImage(
     view.addChildAt(sprite, Math.min(addAtIndex, view.children.length));
   };
   image.onerror = () => {
+    if (disposed) return;
     console.warn(`[${label}] avatar image failed to load:`, url);
     fallback.alpha = 1;
   };
   image.src = url;
+
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    image.onload = null;
+    image.onerror = null;
+    image.src = '';
+    texture?.destroy(true);
+    texture = null;
+  };
 }

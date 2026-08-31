@@ -1,32 +1,19 @@
 import * as PIXI from 'pixi.js';
 import { GifSource, GifSprite } from 'pixi.js/gif';
 
-import type { EmoteItem, MessagePart } from './overlay';
+import type { EmoteItem, MessagePart } from './events';
 
 export type EmoteImageSource = Pick<
   MessagePart | EmoteItem,
-  'url' | 'animated_url' | 'animatedUrl' | 'static_url' | 'staticUrl'
+  'url' | 'animatedUrl' | 'staticUrl'
 >;
 
-export function plainImageUrl(rawUrl: string): string {
-  try {
-    const url = new URL(rawUrl);
-    if (url.hostname === 'static-cdn.jtvnw.net' && url.pathname.includes('/emoticons/v2/')) {
-      url.pathname = url.pathname.replace('/animated/', '/static/').replace('/default/', '/static/');
-      return url.toString();
-    }
-  } catch {
-    // Not an absolute URL; fall through to the plain string rewrite.
-  }
-  return rawUrl.replace('/animated/', '/static/').replace('/default/', '/static/');
-}
-
 export function animatedImageUrl(source: EmoteImageSource): string {
-  return source.animated_url ?? source.animatedUrl ?? '';
+  return source.animatedUrl || '';
 }
 
 export function staticImageUrl(source: EmoteImageSource): string {
-  return source.static_url ?? source.staticUrl ?? (source.url ? plainImageUrl(source.url) : '');
+  return source.staticUrl || source.url || '';
 }
 
 export function fitDisplayObject(view: PIXI.Container, size: number): void {
@@ -58,8 +45,9 @@ export async function loadEmoteDisplay(source: EmoteImageSource): Promise<PIXI.C
   if (animatedUrl) {
     try {
       return await loadAnimatedEmote(animatedUrl);
-    } catch {
-      if (!fallbackUrl) throw new Error('Animated emote failed and no static fallback exists');
+    } catch (error) {
+      // Animated load failed; fall through to the static fallback below.
+      if (!fallbackUrl) throw error;
     }
   }
 
